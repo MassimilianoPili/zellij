@@ -379,6 +379,13 @@ pub struct Options {
     #[serde(default)]
     pub mouse_click_through: Option<bool>,
 
+    /// Whether dragging a pane by its title onto a tab in the tab bar moves the pane to that tab
+    /// (true or false)
+    /// default is false
+    #[clap(long, value_parser)]
+    #[serde(default)]
+    pub mouse_drag_panes: Option<bool>,
+
     /// Whether triple-clicking inside shell-marked (OSC 133) command output selects the command
     /// and its output rather than the logical line
     /// default is true
@@ -572,6 +579,7 @@ impl Options {
         let visual_bell = other.visual_bell.or(self.visual_bell);
         let focus_follows_mouse = other.focus_follows_mouse.or(self.focus_follows_mouse);
         let mouse_click_through = other.mouse_click_through.or(self.mouse_click_through);
+        let mouse_drag_panes = other.mouse_drag_panes.or(self.mouse_drag_panes);
         let osc133_command_selection = other
             .osc133_command_selection
             .or(self.osc133_command_selection);
@@ -651,6 +659,7 @@ impl Options {
             visual_bell,
             focus_follows_mouse,
             mouse_click_through,
+            mouse_drag_panes,
             osc133_command_selection,
             word_separators,
             host_notification_protocol,
@@ -743,6 +752,7 @@ impl Options {
         let visual_bell = other.visual_bell.or(self.visual_bell);
         let focus_follows_mouse = merge_bool(other.focus_follows_mouse, self.focus_follows_mouse);
         let mouse_click_through = merge_bool(other.mouse_click_through, self.mouse_click_through);
+        let mouse_drag_panes = merge_bool(other.mouse_drag_panes, self.mouse_drag_panes);
         let osc133_command_selection = other
             .osc133_command_selection
             .or(self.osc133_command_selection);
@@ -822,6 +832,7 @@ impl Options {
             visual_bell,
             focus_follows_mouse,
             mouse_click_through,
+            mouse_drag_panes,
             osc133_command_selection,
             word_separators,
             host_notification_protocol,

@@ -14028,6 +14028,109 @@ fn click_on_plugin_highlight_sends_highlight_clicked() {
     );
 }
 
+fn create_tab_with_terminal_and_plugin_pane(
+    should_focus_plugin_pane: bool,
+) -> (Tab, Receiver<(PluginInstruction, ErrorContext)>) {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let (mut tab, mock_plugin_receiver) =
+        create_new_tab_with_plugin_receiver(size, ModeInfo::default());
+    tab.update_mouse_drag_panes(true);
+    tab.new_pane(
+        PaneId::Plugin(9),
+        None,
+        None,
+        false,
+        should_focus_plugin_pane,
+        NewPanePlacement::default(),
+        Some(client_id),
+        None,
+    )
+    .unwrap();
+    (tab, mock_plugin_receiver)
+}
+
+fn title_row_position(tab: &Tab, pane_id: PaneId) -> Position {
+    let pane = tab.get_pane_with_id(pane_id).unwrap();
+    Position::new(pane.y() as i32, (pane.get_content_x() + 2) as u16)
+}
+
+fn received_pane_dropped(
+    mock_plugin_receiver: &Receiver<(PluginInstruction, ErrorContext)>,
+) -> Option<(u32, PaneId, isize, usize)> {
+    let mut pane_dropped = None;
+    while let Ok((instruction, _ctx)) = mock_plugin_receiver.try_recv() {
+        if let PluginInstruction::PaneDropped {
+            plugin_id,
+            pane_id,
+            line,
+            column,
+            ..
+        } = instruction
+        {
+            pane_dropped = Some((plugin_id, pane_id, line, column));
+        }
+    }
+    pane_dropped
+}
+
+#[test]
+fn dragging_pane_title_onto_plugin_sends_pane_dropped() {
+    let client_id = 1;
+    let (mut tab, mock_plugin_receiver) = create_tab_with_terminal_and_plugin_pane(false);
+    let title_position = title_row_position(&tab, PaneId::Terminal(1));
+    let plugin_pane = tab.get_pane_with_id(PaneId::Plugin(9)).unwrap();
+    let drop_position = Position::new(
+        (plugin_pane.get_content_y() + 1) as i32,
+        (plugin_pane.get_content_x() + 3) as u16,
+    );
+
+    tab.handle_mouse_event(&MouseEvent::new_left_press_event(title_position), client_id)
+        .unwrap();
+    tab.handle_mouse_event(&MouseEvent::new_left_motion_event(drop_position), client_id)
+        .unwrap();
+    tab.handle_mouse_event(
+        &MouseEvent::new_left_release_event(drop_position),
+        client_id,
+    )
+    .unwrap();
+
+    assert_eq!(
+        received_pane_dropped(&mock_plugin_receiver),
+        Some((9, PaneId::Terminal(1), 1, 3)),
+        "The plugin under the cursor is told which pane was dropped on it and where"
+    );
+}
+
+#[test]
+fn releasing_pane_title_without_moving_focuses_the_pane() {
+    let client_id = 1;
+    let (mut tab, mock_plugin_receiver) = create_tab_with_terminal_and_plugin_pane(true);
+    let title_position = title_row_position(&tab, PaneId::Terminal(1));
+
+    tab.handle_mouse_event(&MouseEvent::new_left_press_event(title_position), client_id)
+        .unwrap();
+    tab.handle_mouse_event(
+        &MouseEvent::new_left_release_event(title_position),
+        client_id,
+    )
+    .unwrap();
+
+    assert_eq!(
+        received_pane_dropped(&mock_plugin_receiver),
+        None,
+        "A click on the title does not drop the pane anywhere"
+    );
+    assert_eq!(
+        tab.get_active_pane_id(client_id),
+        Some(PaneId::Terminal(1)),
+        "A click on the title focuses the pane"
+    );
+}
+
 #[test]
 fn click_outside_highlight_starts_normal_selection() {
     let size = Size {

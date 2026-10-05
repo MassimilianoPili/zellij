@@ -1040,6 +1040,13 @@ pub enum Event {
     SoftKeyboardVisibilityChanged(bool),
     HintText(BTreeMap<usize, StyledText>),
     ActivePaneScroll(Option<(usize, usize)>),
+    /// A pane was dragged with the mouse and dropped on this plugin's pane, at this line and
+    /// column relative to the plugin's content (eg. on a tab in the tab bar)
+    PaneDropped {
+        pane_id: PaneId,
+        line: isize,
+        column: usize,
+    },
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

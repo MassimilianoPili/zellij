@@ -220,6 +220,13 @@ pub enum PluginInstruction {
         matched_string: String,
         context: BTreeMap<String, String>,
     },
+    PaneDropped {
+        plugin_id: u32,
+        client_id: ClientId,
+        pane_id: PaneId,
+        line: isize,
+        column: usize,
+    },
     Exit,
 }
 
@@ -284,6 +291,7 @@ impl From<&PluginInstruction> for PluginContext {
                 PluginContext::DetectPluginConfigChanges
             },
             PluginInstruction::HighlightClicked { .. } => PluginContext::HighlightClicked,
+            PluginInstruction::PaneDropped { .. } => PluginContext::PaneDropped,
         }
     }
 }
@@ -1268,6 +1276,21 @@ pub(crate) fn plugin_thread_main(
                     pattern,
                     matched_string,
                     context,
+                };
+                let updates = vec![(Some(plugin_id), Some(client_id), event)];
+                wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
+            },
+            PluginInstruction::PaneDropped {
+                plugin_id,
+                client_id,
+                pane_id,
+                line,
+                column,
+            } => {
+                let event = Event::PaneDropped {
+                    pane_id: pane_id.into(),
+                    line,
+                    column,
                 };
                 let updates = vec![(Some(plugin_id), Some(client_id), event)];
                 wasm_bridge.update_plugins(updates, shutdown_send.clone())?;

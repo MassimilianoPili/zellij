@@ -604,6 +604,10 @@ web_client {
 // default is false
 // mouse_click_through false
  
+// Whether dragging a pane by its title onto a tab in the tab bar moves the pane to that tab
+// default is false
+// mouse_drag_panes false
+ 
 // Whether triple-clicking inside command output marked by the shell (OSC 133) selects
 // the command and its output instead of the logical line
 // default is true

@@ -977,6 +977,7 @@ impl From<crate::input::options::Options>
             visual_bell: options.visual_bell,
             focus_follows_mouse: options.focus_follows_mouse,
             mouse_click_through: options.mouse_click_through,
+            mouse_drag_panes: options.mouse_drag_panes,
             osc133_command_selection: options.osc133_command_selection,
             word_separators: options.word_separators,
             host_notification_protocol: options
@@ -1115,6 +1116,7 @@ impl TryFrom<crate::client_server_contract::client_server_contract::Options>
             visual_bell: options.visual_bell,
             focus_follows_mouse: options.focus_follows_mouse,
             mouse_click_through: options.mouse_click_through,
+            mouse_drag_panes: options.mouse_drag_panes,
             osc133_command_selection: options.osc133_command_selection,
             word_separators: options.word_separators,
             host_notification_protocol: options

@@ -62,6 +62,7 @@ impl ZellijPlugin for State {
             EventType::HintText,
             EventType::Timer,
             EventType::InputReceived,
+            EventType::PaneDropped,
         ]);
     }
 
@@ -181,6 +182,18 @@ impl ZellijPlugin for State {
                     switch_tab_to(max(self.active_tab_idx.saturating_sub(1), 1) as u32);
                 },
                 _ => {},
+            },
+            Event::PaneDropped { pane_id, column, .. } => {
+                if let Some((start, end)) = self.new_tab_button_range {
+                    if column >= start && column < end {
+                        break_panes_to_new_tab(&[pane_id], None, true);
+                        return should_render;
+                    }
+                }
+                // get_tab_to_focus counts tabs from 1, the plugin api from 0
+                if let Some(idx) = get_tab_to_focus(&self.tab_line, self.active_tab_idx, column) {
+                    break_panes_to_tab_with_index(&[pane_id], idx - 1, true);
+                }
             },
             _ => {
                 eprintln!("Got unrecognized event: {:?}", event);

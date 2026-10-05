@@ -619,6 +619,20 @@ impl TryFrom<ProtobufEvent> for Event {
                 },
                 _ => Err("Malformed payload for ActivePaneScroll Event"),
             },
+            Some(ProtobufEventType::PaneDropped) => match protobuf_event.payload {
+                Some(ProtobufEventPayload::PaneDroppedPayload(p)) => {
+                    let pane_id = p
+                        .pane_id
+                        .ok_or("Missing pane_id in PaneDropped")?
+                        .try_into()?;
+                    Ok(Event::PaneDropped {
+                        pane_id,
+                        line: p.line as isize,
+                        column: p.column as usize,
+                    })
+                },
+                _ => Err("Malformed payload for PaneDropped Event"),
+            },
             None => Err("Unknown Protobuf Event"),
         }
     }
@@ -1192,6 +1206,18 @@ impl TryFrom<Event> for ProtobufEvent {
                     payload: Some(event::Payload::ActivePaneScrollPayload(payload)),
                 })
             },
+            Event::PaneDropped {
+                pane_id,
+                line,
+                column,
+            } => Ok(ProtobufEvent {
+                name: ProtobufEventType::PaneDropped as i32,
+                payload: Some(event::Payload::PaneDroppedPayload(PaneDroppedPayload {
+                    pane_id: pane_id.try_into().ok(),
+                    line: line as i64,
+                    column: column as u64,
+                })),
+            }),
             Event::InitialKeybinds(keybinds) => {
                 let mut protobuf_keybinds: Vec<ProtobufInputModeKeybinds> = vec![];
                 for (input_mode, input_mode_keybinds) in keybinds {
@@ -2232,6 +2258,7 @@ impl TryFrom<ProtobufEventType> for EventType {
             },
             ProtobufEventType::HintText => EventType::HintText,
             ProtobufEventType::ActivePaneScroll => EventType::ActivePaneScroll,
+            ProtobufEventType::PaneDropped => EventType::PaneDropped,
         })
     }
 }
@@ -2290,6 +2317,7 @@ impl TryFrom<EventType> for ProtobufEventType {
             },
             EventType::HintText => ProtobufEventType::HintText,
             EventType::ActivePaneScroll => ProtobufEventType::ActivePaneScroll,
+            EventType::PaneDropped => ProtobufEventType::PaneDropped,
         })
     }
 }
@@ -2656,6 +2684,25 @@ fn serialize_active_pane_scroll_event() {
             "Event properly serialized/deserialized without change"
         );
     }
+}
+
+#[test]
+fn serialize_pane_dropped_event() {
+    use prost::Message;
+    let pane_dropped_event = Event::PaneDropped {
+        pane_id: PaneId::Terminal(3),
+        line: 0,
+        column: 42,
+    };
+    let protobuf_event: ProtobufEvent = pane_dropped_event.clone().try_into().unwrap();
+    let serialized_protobuf_event = protobuf_event.encode_to_vec();
+    let deserialized_protobuf_event: ProtobufEvent =
+        Message::decode(serialized_protobuf_event.as_slice()).unwrap();
+    let deserialized_event: Event = deserialized_protobuf_event.try_into().unwrap();
+    assert_eq!(
+        pane_dropped_event, deserialized_event,
+        "Event properly serialized/deserialized without change"
+    );
 }
 
 #[test]

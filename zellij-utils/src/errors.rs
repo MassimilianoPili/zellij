@@ -568,6 +568,7 @@ pub enum PluginContext {
     GetLastSessionSaveTime,
     DetectPluginConfigChanges,
     HighlightClicked,
+    PaneDropped,
 }
 
 /// Stack call representations corresponding to the different types of [`ClientInstruction`]s.

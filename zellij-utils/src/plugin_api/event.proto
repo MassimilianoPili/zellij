@@ -72,6 +72,7 @@ enum EventType {
     SoftKeyboardVisibilityChanged = 47;
     HintText = 48;
     ActivePaneScroll = 49;
+    PaneDropped = 52;
 }
 
 message EventNameList {
@@ -123,6 +124,7 @@ message Event {
     SoftKeyboardVisibilityChangedPayload soft_keyboard_visibility_changed_payload = 41;
     HintTextPayload hint_text_payload = 42;
     ActivePaneScrollPayload active_pane_scroll_payload = 43;
+    PaneDroppedPayload pane_dropped_payload = 46;
   }
 }
 
@@ -592,6 +594,12 @@ message HighlightClickedPayload {
   string pattern = 2;
   string matched_string = 3;
   repeated ContextItem context = 4;
+}
+
+message PaneDroppedPayload {
+  PaneId pane_id = 1;
+  int64 line = 2;
+  uint64 column = 3;
 }
 
 message InitialKeybindsPayload {

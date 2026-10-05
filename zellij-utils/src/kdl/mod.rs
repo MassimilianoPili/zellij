@@ -2953,6 +2953,9 @@ impl Options {
         let mouse_click_through =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "mouse_click_through")
                 .map(|(v, _)| v);
+        let mouse_drag_panes =
+            kdl_property_first_arg_as_bool_or_error!(kdl_options, "mouse_drag_panes")
+                .map(|(v, _)| v);
         let osc133_command_selection =
             kdl_property_first_arg_as_bool_or_error!(kdl_options, "osc133_command_selection")
                 .map(|(v, _)| v);
@@ -3039,6 +3042,7 @@ impl Options {
             visual_bell,
             focus_follows_mouse,
             mouse_click_through,
+            mouse_drag_panes,
             osc133_command_selection,
             word_separators,
             host_notification_protocol,
@@ -4512,6 +4516,33 @@ impl Options {
             None
         }
     }
+    fn mouse_drag_panes_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
+        let comment_text = format!(
+            "{}\n{}\n{}",
+            " ",
+            "// Whether dragging a pane by its title onto a tab in the tab bar moves the pane to that tab",
+            "// default is false",
+        );
+
+        let create_node = |node_value: bool| -> KdlNode {
+            let mut node = KdlNode::new("mouse_drag_panes");
+            node.push(KdlValue::Bool(node_value));
+            node
+        };
+        if let Some(mouse_drag_panes) = self.mouse_drag_panes {
+            let mut node = create_node(mouse_drag_panes);
+            if add_comments {
+                node.set_leading(format!("{}\n", comment_text));
+            }
+            Some(node)
+        } else if add_comments {
+            let mut node = create_node(false);
+            node.set_leading(format!("{}\n// ", comment_text));
+            Some(node)
+        } else {
+            None
+        }
+    }
     fn osc133_command_selection_to_kdl(&self, add_comments: bool) -> Option<KdlNode> {
         let comment_text = format!(
             "{}\n{}\n{}\n{}",
@@ -4940,6 +4971,9 @@ impl Options {
         }
         if let Some(mouse_click_through) = self.mouse_click_through_to_kdl(add_comments) {
             nodes.push(mouse_click_through);
+        }
+        if let Some(mouse_drag_panes) = self.mouse_drag_panes_to_kdl(add_comments) {
+            nodes.push(mouse_drag_panes);
         }
         if let Some(osc133_command_selection) = self.osc133_command_selection_to_kdl(add_comments) {
             nodes.push(osc133_command_selection);

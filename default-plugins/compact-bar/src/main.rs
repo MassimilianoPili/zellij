@@ -110,6 +110,10 @@ impl ZellijPlugin for State {
                 self.handle_mouse_event(mouse_event);
                 false
             },
+            Event::PaneDropped { pane_id, column, .. } => {
+                self.handle_pane_dropped(pane_id, column);
+                false
+            },
             Event::CopyToClipboard(copy_destination) => {
                 self.handle_clipboard_copy(copy_destination)
             },
@@ -179,6 +183,7 @@ impl State {
                 EventType::InputReceived,
                 EventType::SystemClipboardFailure,
                 EventType::InitialKeybinds,
+                EventType::PaneDropped,
             ]
         };
 
@@ -379,6 +384,16 @@ impl State {
     fn handle_tab_click(&self, col: usize) {
         if let Some(tab_idx) = get_tab_to_focus(&self.tab_line, self.active_tab_idx, col) {
             switch_tab_to(tab_idx.try_into().unwrap());
+        }
+    }
+
+    fn handle_pane_dropped(&self, pane_id: PaneId, col: usize) {
+        if self.is_tooltip {
+            return;
+        }
+        if let Some(tab_idx) = get_tab_to_focus(&self.tab_line, self.active_tab_idx, col) {
+            // Convert to 0-based indexing
+            break_panes_to_tab_with_index(&[pane_id], tab_idx.saturating_sub(1), true);
         }
     }
 

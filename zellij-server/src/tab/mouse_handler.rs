@@ -147,6 +147,17 @@ enum MouseAction {
     StopMovingFloatingPane {
         position: Position,
     },
+    StartDragPane {
+        pane_id: PaneId,
+        position: Position,
+    },
+    ContinueDragPane {
+        position: Position,
+    },
+    DropPane {
+        position: Position,
+    },
+    CancelDragPane,
     ScrollUp {
         pane_id: PaneId,
         lines: usize,
@@ -215,9 +226,20 @@ pub struct PaneResizeState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneDragState {
+    pub pane_id: PaneId,
+    pub start_position: Position,
+    pub has_moved: bool,
+    pub hovered_plugin_pane_id: Option<PaneId>,
+}
+
+const DRAGGED_PANE_TEXT: &str = "DROP ON A TAB TO MOVE";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ClickedPaneDetails {
     pane_id: PaneId,
     on_frame: bool,
+    on_title_row: bool,
     frame_intercepted: bool,
     edge: Option<PaneEdge>,
     is_floating: bool,
@@ -232,6 +254,7 @@ struct MouseEventContext {
     pane_being_resized: bool,
     selecting_with_mouse: bool,
     pane_being_moved: bool,
+    pane_being_dragged: bool,
     clicked_pane: Option<ClickedPaneDetails>,
     advanced_mouse_actions: bool,
     pinned_selectable: Option<PaneId>,
@@ -239,6 +262,7 @@ struct MouseEventContext {
     focus_follows_mouse: bool,
     mouse_click_through: bool,
     mouse_scroll_resize: bool,
+    mouse_drag_panes: bool,
     passthrough_pane_id: Option<PaneId>,
 }
 
@@ -473,6 +497,7 @@ impl MouseHandler {
             pane_being_resized: tab.pane_being_resized_with_mouse.is_some(),
             selecting_with_mouse: tab.selecting_with_mouse_in_pane.is_some(),
             pane_being_moved: tab.floating_panes.pane_is_being_moved_with_mouse(),
+            pane_being_dragged: tab.pane_being_dragged_with_mouse.is_some(),
             clicked_pane,
             advanced_mouse_actions: tab.advanced_mouse_actions,
             pinned_selectable,
@@ -480,6 +505,7 @@ impl MouseHandler {
             focus_follows_mouse: tab.focus_follows_mouse,
             mouse_click_through: tab.mouse_click_through,
             mouse_scroll_resize: tab.mouse_scroll_resize,
+            mouse_drag_panes: tab.mouse_drag_panes,
             passthrough_pane_id,
         })
     }
@@ -497,6 +523,11 @@ impl MouseHandler {
         let pane = Self::get_pane_at(tab, position, false).ok()??;
 
         let on_frame = !is_hidden_stack_list_member && pane.position_is_on_frame(position);
+        // the title row is the top border, without the corners shared with the side borders
+        let on_title_row = on_frame
+            && position.line() < pane.get_content_y() as isize
+            && (pane.get_content_x()..pane.get_content_x() + pane.get_content_columns())
+                .contains(&position.column());
         let frame_intercepted = on_frame && pane.intercept_mouse_event_on_frame(event, client_id);
         let edge = if on_frame {
             pane.get_edge_at_position(position)
@@ -513,6 +544,7 @@ impl MouseHandler {
         Some(ClickedPaneDetails {
             pane_id,
             on_frame,
+            on_title_row,
             frame_intercepted,
             edge,
             is_floating,
@@ -639,6 +671,110 @@ impl MouseHandler {
         tab.pane_being_resized_with_mouse = None;
 
         Ok(never_resized)
+    }
+
+    fn continue_pane_drag_with_mouse(
+        tab: &mut Tab,
+        position: Position,
+        client_id: ClientId,
+    ) -> Result<MouseEffect> {
+        let err_context = || "failed to continue pane drag with mouse";
+
+        let Some(mut drag_state) = tab.pane_being_dragged_with_mouse else {
+            return Ok(MouseEffect::default());
+        };
+        let mut state_changed = false;
+        if !drag_state.has_moved && position != drag_state.start_position {
+            drag_state.has_moved = true;
+            tab.add_highlight_pane_frame_color_override(
+                drag_state.pane_id,
+                Some(DRAGGED_PANE_TEXT.to_owned()),
+                None,
+            );
+            tab.set_force_render();
+            state_changed = true;
+        }
+
+        // let a plugin under the cursor (eg. the tab bar) show what is being hovered, as it does
+        // for buttonless motion
+        let plugin_pane_id = Self::get_pane_at(tab, &position, false)
+            .with_context(err_context)?
+            .map(|p| p.pid())
+            .filter(|pid| matches!(pid, PaneId::Plugin(_)) && *pid != drag_state.pane_id);
+        if let Some(pane) = plugin_pane_id.and_then(|pid| tab.get_pane_with_id(pid)) {
+            let relative_position = pane.relative_position(&position);
+            let _ = pane.mouse_event(
+                &MouseEvent::new_buttonless_motion(relative_position),
+                client_id,
+            );
+        }
+        if drag_state.hovered_plugin_pane_id != plugin_pane_id {
+            Self::clear_plugin_drag_hover(tab, drag_state.hovered_plugin_pane_id, client_id);
+            drag_state.hovered_plugin_pane_id = plugin_pane_id;
+        }
+
+        tab.pane_being_dragged_with_mouse = Some(drag_state);
+        if state_changed {
+            Ok(MouseEffect::state_changed())
+        } else {
+            Ok(MouseEffect::default())
+        }
+    }
+
+    fn drop_pane_with_mouse(
+        tab: &mut Tab,
+        position: Position,
+        client_id: ClientId,
+    ) -> Result<MouseEffect> {
+        let err_context = || "failed to drop pane";
+
+        let Some(drag_state) = Self::end_pane_drag_with_mouse(tab, client_id) else {
+            return Ok(MouseEffect::default());
+        };
+        let drop_target = Self::get_pane_at(tab, &position, false)
+            .with_context(err_context)?
+            .map(|p| (p.pid(), p.relative_position(&position)));
+        match drop_target {
+            // released over the dragged pane itself: a click on the title, or a drag that came
+            // back to where it started
+            Some((pane_id, _)) if pane_id == drag_state.pane_id => {
+                if tab.get_active_pane_id(client_id) != Some(pane_id) {
+                    Self::focus_pane_at(tab, &position, client_id).with_context(err_context)?;
+                }
+            },
+            // the server does not know what a plugin draws where (eg. which tab is under the
+            // cursor in the tab bar), so the plugin decides what dropping the pane there means
+            Some((PaneId::Plugin(plugin_id), relative_position)) => {
+                let _ = tab.senders.send_to_plugin(PluginInstruction::PaneDropped {
+                    plugin_id,
+                    client_id,
+                    pane_id: drag_state.pane_id,
+                    line: relative_position.line(),
+                    column: relative_position.column(),
+                });
+            },
+            _ => {},
+        }
+        Ok(MouseEffect::state_changed())
+    }
+
+    fn end_pane_drag_with_mouse(tab: &mut Tab, client_id: ClientId) -> Option<PaneDragState> {
+        let drag_state = tab.pane_being_dragged_with_mouse.take()?;
+        if drag_state.has_moved {
+            tab.clear_pane_frame_color_override(drag_state.pane_id, None);
+            tab.set_force_render();
+        }
+        Self::clear_plugin_drag_hover(tab, drag_state.hovered_plugin_pane_id, client_id);
+        Some(drag_state)
+    }
+
+    fn clear_plugin_drag_hover(tab: &mut Tab, plugin_pane_id: Option<PaneId>, client_id: ClientId) {
+        if let Some(pane) = plugin_pane_id.and_then(|pid| tab.get_pane_with_id(pid)) {
+            let _ = pane.mouse_event(
+                &MouseEvent::new_buttonless_motion(Position::new(0, u16::MAX)),
+                client_id,
+            );
+        }
     }
 
     fn resize_floating_pane_with_strategies(
@@ -833,6 +969,27 @@ impl MouseHandler {
             },
             MouseAction::StopMovingFloatingPane { position } => {
                 Self::execute_stop_moving_floating_pane(tab, position, client_id)
+            },
+            MouseAction::StartDragPane { pane_id, position } => {
+                clear_hover_for_client(tab, client_id);
+                tab.pane_being_dragged_with_mouse = Some(PaneDragState {
+                    pane_id,
+                    start_position: position,
+                    has_moved: false,
+                    hovered_plugin_pane_id: None,
+                });
+                Ok(MouseEffect::default())
+            },
+            MouseAction::ContinueDragPane { position } => {
+                Self::continue_pane_drag_with_mouse(tab, position, client_id)
+                    .with_context(err_context)
+            },
+            MouseAction::DropPane { position } => {
+                Self::drop_pane_with_mouse(tab, position, client_id).with_context(err_context)
+            },
+            MouseAction::CancelDragPane => {
+                Self::end_pane_drag_with_mouse(tab, client_id);
+                Ok(MouseEffect::state_changed())
             },
             MouseAction::ScrollUp { pane_id: _, lines } => {
                 Self::handle_scrollwheel_up(tab, &event.position, lines, client_id)
@@ -1353,6 +1510,20 @@ impl MouseHandler {
             });
         }
 
+        if ctx.pane_being_dragged {
+            // anything other than a left drag or a release means the release was lost (eg. it
+            // happened outside the host terminal window), so we cancel instead of staying stuck
+            return Ok(match event.event_type {
+                MouseEventType::Motion if event.left => MouseAction::ContinueDragPane {
+                    position: event.position,
+                },
+                MouseEventType::Release => MouseAction::DropPane {
+                    position: event.position,
+                },
+                _ => MouseAction::CancelDragPane,
+            });
+        }
+
         if event.alt {
             if let (Some(passthrough_pane_id), Some(details)) =
                 (ctx.passthrough_pane_id, ctx.clicked_pane.as_ref())
@@ -1482,6 +1653,14 @@ impl MouseHandler {
                 let should_start_moving = ctx.floating_visible || is_pinned_pane;
                 if should_start_moving {
                     return Ok(MouseAction::StartMovingFloatingPane {
+                        position: event.position,
+                    });
+                }
+
+                // with mouse_drag_panes, the title row drags the pane and Ctrl+drag resizes it
+                if ctx.mouse_drag_panes && details.on_title_row && !details.is_floating {
+                    return Ok(MouseAction::StartDragPane {
+                        pane_id: details.pane_id,
                         position: event.position,
                     });
                 }
@@ -1930,6 +2109,7 @@ mod tests {
             pane_being_resized: false,
             selecting_with_mouse: false,
             pane_being_moved: false,
+            pane_being_dragged: false,
             clicked_pane: None,
             advanced_mouse_actions: true,
             pinned_selectable: None,
@@ -1937,6 +2117,7 @@ mod tests {
             focus_follows_mouse: false,
             mouse_click_through: false,
             mouse_scroll_resize,
+            mouse_drag_panes: false,
             passthrough_pane_id: None,
         }
     }
@@ -1954,6 +2135,92 @@ mod tests {
             assert_eq!(
                 MouseHandler::determine_mouse_action(&event, &context).unwrap(),
                 MouseAction::NoAction
+            );
+        }
+    }
+
+    fn title_row_context(mouse_drag_panes: bool) -> MouseEventContext {
+        let mut context = mouse_event_context(true);
+        context.mouse_drag_panes = mouse_drag_panes;
+        context.clicked_pane = Some(ClickedPaneDetails {
+            pane_id: PaneId::Terminal(1),
+            on_frame: true,
+            on_title_row: true,
+            frame_intercepted: false,
+            edge: Some(PaneEdge::TopLeft),
+            is_floating: false,
+            terminal_wants_mouse: false,
+        });
+        context
+    }
+
+    #[test]
+    fn press_on_title_row_starts_drag_only_with_mouse_drag_panes() {
+        let position = Position::new(0, 5);
+        let event = MouseEvent::new_left_press_event(position);
+        assert_eq!(
+            MouseHandler::determine_mouse_action(&event, &title_row_context(true)).unwrap(),
+            MouseAction::StartDragPane {
+                pane_id: PaneId::Terminal(1),
+                position,
+            }
+        );
+        assert_eq!(
+            MouseHandler::determine_mouse_action(&event, &title_row_context(false)).unwrap(),
+            MouseAction::StartResize {
+                pane_id: PaneId::Terminal(1),
+                edge: PaneEdge::TopLeft,
+                is_floating: false,
+                position,
+            }
+        );
+    }
+
+    #[test]
+    fn ctrl_press_on_title_row_still_resizes_with_mouse_drag_panes() {
+        let position = Position::new(0, 5);
+        let event = MouseEvent::new_left_press_with_ctrl_event(position);
+        assert_eq!(
+            MouseHandler::determine_mouse_action(&event, &title_row_context(true)).unwrap(),
+            MouseAction::StartResize {
+                pane_id: PaneId::Terminal(1),
+                edge: PaneEdge::TopLeft,
+                is_floating: false,
+                position,
+            }
+        );
+    }
+
+    #[test]
+    fn pane_drag_continues_drops_or_cancels() {
+        let mut context = mouse_event_context(true);
+        context.pane_being_dragged = true;
+        let position = Position::new(3, 7);
+        assert_eq!(
+            MouseHandler::determine_mouse_action(
+                &MouseEvent::new_left_motion_event(position),
+                &context
+            )
+            .unwrap(),
+            MouseAction::ContinueDragPane { position }
+        );
+        assert_eq!(
+            MouseHandler::determine_mouse_action(
+                &MouseEvent::new_left_release_event(position),
+                &context
+            )
+            .unwrap(),
+            MouseAction::DropPane { position }
+        );
+        let lost_release_events = [
+            MouseEvent::new_buttonless_motion(position),
+            MouseEvent::new_left_press_event(position),
+            MouseEvent::new_right_press_event(position),
+        ];
+        for event in lost_release_events {
+            assert_eq!(
+                MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+                MouseAction::CancelDragPane
             );
         }
     }

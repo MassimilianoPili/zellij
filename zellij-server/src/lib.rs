@@ -478,6 +478,7 @@ impl SessionMetaData {
                     visual_bell: new_config.options.visual_bell.unwrap_or(true),
                     focus_follows_mouse: new_config.options.focus_follows_mouse.unwrap_or(false),
                     mouse_click_through: new_config.options.mouse_click_through.unwrap_or(false),
+                    mouse_drag_panes: new_config.options.mouse_drag_panes.unwrap_or(false),
                     osc133_command_selection: new_config
                         .options
                         .osc133_command_selection

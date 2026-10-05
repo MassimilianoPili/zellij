@@ -823,6 +823,7 @@ pub enum ScreenInstruction {
         visual_bell: bool,
         focus_follows_mouse: bool,
         mouse_click_through: bool,
+        mouse_drag_panes: bool,
         osc133_command_selection: bool,
         word_separators: String,
         host_notification_protocol: HostNotificationProtocol,
@@ -1585,6 +1586,7 @@ pub(crate) struct Screen {
     visual_bell: bool,
     focus_follows_mouse: bool,
     mouse_click_through: bool,
+    mouse_drag_panes: bool,
     currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
     // the below are the configured values - the ones that will be set if and when the web server
     // is brought online
@@ -1795,6 +1797,7 @@ impl Screen {
             visual_bell,
             focus_follows_mouse,
             mouse_click_through,
+            mouse_drag_panes: false,
             web_server_ip,
             web_server_port,
             render_blocker: RenderBlocker::new(100),
@@ -4857,6 +4860,7 @@ impl Screen {
             tab.update_sixel_host_support(aggregate);
         }
         tab.update_selection_options(self.osc133_command_selection, self.word_separators.clone());
+        tab.update_mouse_drag_panes(self.mouse_drag_panes);
         self.tabs.insert(tab_id, tab);
         Ok(())
     }
@@ -6855,6 +6859,7 @@ impl Screen {
         visual_bell: bool,
         focus_follows_mouse: bool,
         mouse_click_through: bool,
+        mouse_drag_panes: bool,
         osc133_command_selection: bool,
         word_separators: String,
         host_notification_protocol: HostNotificationProtocol,
@@ -6889,6 +6894,7 @@ impl Screen {
         self.visual_bell = visual_bell;
         self.focus_follows_mouse = focus_follows_mouse;
         self.mouse_click_through = mouse_click_through;
+        self.mouse_drag_panes = mouse_drag_panes;
         self.osc133_command_selection = osc133_command_selection;
         self.word_separators = word_separators;
         self.set_host_notification_protocol(host_notification_protocol);
@@ -6922,6 +6928,7 @@ impl Screen {
             tab.update_mouse_hover_tips(mouse_hover_tips);
             tab.update_focus_follows_mouse(focus_follows_mouse);
             tab.update_mouse_click_through(mouse_click_through);
+            tab.update_mouse_drag_panes(mouse_drag_panes);
             tab.update_selection_options(osc133_command_selection, self.word_separators.clone());
             tab.sync_stacked_pane_list_mode();
         }
@@ -8130,6 +8137,7 @@ pub(crate) fn screen_thread_main(
     let visual_bell = config_options.visual_bell.unwrap_or(true);
     let focus_follows_mouse = config_options.focus_follows_mouse.unwrap_or(false);
     let mouse_click_through = config_options.mouse_click_through.unwrap_or(false);
+    let mouse_drag_panes = config_options.mouse_drag_panes.unwrap_or(false);
     let nested_session_handling = config_options.nested_session_handling.unwrap_or_default();
     let dangerously_enable_paste_buffer_read = config_options
         .dangerously_enable_paste_buffer_read
@@ -8189,6 +8197,7 @@ pub(crate) fn screen_thread_main(
     screen.host_theme_dark_styling = host_theme_dark_styling;
     screen.host_theme_light_styling = host_theme_light_styling;
     screen.paste_buffer_read_enabled = dangerously_enable_paste_buffer_read;
+    screen.mouse_drag_panes = mouse_drag_panes;
     screen.set_host_notification_protocol(host_notification_protocol);
     if explicit_theme_hue.is_some() {
         screen
@@ -11577,6 +11586,7 @@ pub(crate) fn screen_thread_main(
                 visual_bell,
                 focus_follows_mouse,
                 mouse_click_through,
+                mouse_drag_panes,
                 osc133_command_selection,
                 word_separators,
                 host_notification_protocol,
@@ -11610,6 +11620,7 @@ pub(crate) fn screen_thread_main(
                         visual_bell,
                         focus_follows_mouse,
                         mouse_click_through,
+                        mouse_drag_panes,
                         osc133_command_selection,
                         word_separators,
                         host_notification_protocol,

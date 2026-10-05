@@ -2096,6 +2096,7 @@ fn check_event_permission(
         | Event::AvailableLayoutInfo(..)
         | Event::PluginConfigurationChanged(..)
         | Event::HighlightClicked { .. }
+        | Event::PaneDropped { .. }
         | Event::SoftKeyboardVisibilityChanged(..)
         | Event::HintText(..)
         | Event::ActivePaneScroll(..)

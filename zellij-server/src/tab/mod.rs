@@ -9,7 +9,7 @@ mod swap_layouts;
 
 use crate::plugins::PluginId;
 use copy_command::CopyCommand;
-pub use mouse_handler::{MouseEffect, MouseHandler, PaneEdge, PaneResizeState};
+pub use mouse_handler::{MouseEffect, MouseHandler, PaneDragState, PaneEdge, PaneResizeState};
 use std::env::temp_dir;
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -221,6 +221,7 @@ pub(crate) struct Tab {
     pending_vte_events: HashMap<u32, Vec<VteBytes>>,
     pub selecting_with_mouse_in_pane: Option<PaneId>, // this is only pub for the tests
     pane_being_resized_with_mouse: Option<PaneResizeState>,
+    pane_being_dragged_with_mouse: Option<PaneDragState>,
     link_handler: Rc<RefCell<LinkHandler>>,
     clipboard_provider: ClipboardProvider,
     // TODO: used only to focus the pane when the layout is loaded
@@ -263,6 +264,7 @@ pub(crate) struct Tab {
     mouse_hover_tips: bool,
     focus_follows_mouse: bool,
     mouse_click_through: bool,
+    mouse_drag_panes: bool,
     osc133_command_selection: bool,
     word_separators: String,
     currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
@@ -988,6 +990,7 @@ impl Tab {
             connected_clients,
             selecting_with_mouse_in_pane: None,
             pane_being_resized_with_mouse: None,
+            pane_being_dragged_with_mouse: None,
             link_handler: Rc::new(RefCell::new(LinkHandler::new())),
             clipboard_provider,
             focus_pane_id: None,
@@ -1025,6 +1028,7 @@ impl Tab {
             mouse_hover_tips,
             focus_follows_mouse,
             mouse_click_through,
+            mouse_drag_panes: false,
             osc133_command_selection: true,
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
             connected_clients_in_app,
@@ -7620,6 +7624,9 @@ impl Tab {
     }
     pub fn update_mouse_click_through(&mut self, mouse_click_through: bool) {
         self.mouse_click_through = mouse_click_through;
+    }
+    pub fn update_mouse_drag_panes(&mut self, mouse_drag_panes: bool) {
+        self.mouse_drag_panes = mouse_drag_panes;
     }
     pub fn update_selection_options(
         &mut self,
