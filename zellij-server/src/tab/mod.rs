@@ -9,7 +9,9 @@ mod swap_layouts;
 
 use crate::plugins::PluginId;
 use copy_command::CopyCommand;
-pub use mouse_handler::{DropTarget, DropZone, MouseEffect, MouseHandler, PaneEdge, PaneResizeState};
+pub use mouse_handler::{
+    DropTarget, DropZone, MouseEffect, MouseHandler, PaneEdge, PaneResizeState,
+};
 
 /// What a client dragging a pane or a tab with the mouse sees in this tab
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7743,8 +7745,8 @@ impl Tab {
         }
         self.tiled_panes.focus_pane(pane_id, client_id);
         self.clear_pane_frame_color_override(pane_id, None);
-        let docked_in_a_row = matches!(side, DockSide::Left | DockSide::Right)
-            && self.tiled_panes_are_a_single_row();
+        let docked_in_a_row =
+            matches!(side, DockSide::Left | DockSide::Right) && self.tiled_panes_are_a_single_row();
         if keep_swap_layout && self.auto_layout && docked_in_a_row {
             self.order_tiled_panes_by_column();
             // the layout is marked as damaged, so this re-applies the current swap layout instead

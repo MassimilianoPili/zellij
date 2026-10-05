@@ -14253,10 +14253,7 @@ fn docking_a_pane_beside_a_column_keeps_columns_of_equal_width() {
         .iter()
         .map(|pane_id| tab.get_pane_with_id(*pane_id).unwrap().cols())
         .collect();
-    let (narrowest, widest) = (
-        *widths.iter().min().unwrap(),
-        *widths.iter().max().unwrap(),
-    );
+    let (narrowest, widest) = (*widths.iter().min().unwrap(), *widths.iter().max().unwrap());
     assert!(
         widest - narrowest <= 1,
         "The columns are still of equal width: {:?}",
@@ -14293,8 +14290,11 @@ fn hovering_a_pane_title_shows_the_drag_hint() {
     let (mut tab, _mock_plugin_receiver) = create_tab_with_terminal_and_plugin_pane(false);
     let title_position = title_row_position(&tab, PaneId::Terminal(1));
 
-    tab.handle_mouse_event(&MouseEvent::new_buttonless_motion(title_position), client_id)
-        .unwrap();
+    tab.handle_mouse_event(
+        &MouseEvent::new_buttonless_motion(title_position),
+        client_id,
+    )
+    .unwrap();
 
     let hint_text = tab.resolve_hint_text(client_id);
     assert!(

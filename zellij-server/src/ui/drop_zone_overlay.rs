@@ -37,7 +37,9 @@ pub fn drop_zone_overlay_chunks(
         return vec![];
     }
     let outline_style: RcCharacterStyles = RESET_STYLES
-        .foreground(Some(AnsiCode::from(style.colors.frame_highlight.emphasis_0)))
+        .foreground(Some(AnsiCode::from(
+            style.colors.frame_highlight.emphasis_0,
+        )))
         .bold(Some(AnsiCode::On))
         .into();
     let character = |c: char| TerminalCharacter::new_styled(c, outline_style.clone());
@@ -70,7 +72,11 @@ pub fn drop_zone_overlay_chunks(
     ];
     for line in y + 1..y + height - 1 {
         chunks.push(CharacterChunk::new(vec![character('┃')], x, line));
-        chunks.push(CharacterChunk::new(vec![character('┃')], x + width - 1, line));
+        chunks.push(CharacterChunk::new(
+            vec![character('┃')],
+            x + width - 1,
+            line,
+        ));
     }
     chunks
 }
@@ -94,8 +100,14 @@ mod tests {
     fn right_zone_outlines_the_right_half_of_the_content() {
         let chunks = drop_zone_overlay_chunks(10, 5, 20, 4, DropZone::Right, &Style::default());
         let cells = outline_cells(&chunks);
-        assert!(cells.contains(&(20, 5, '┏')), "top left corner of the right half");
-        assert!(cells.contains(&(29, 5, '┓')), "top right corner of the content");
+        assert!(
+            cells.contains(&(20, 5, '┏')),
+            "top left corner of the right half"
+        );
+        assert!(
+            cells.contains(&(29, 5, '┓')),
+            "top right corner of the content"
+        );
         assert!(cells.contains(&(20, 8, '┗')), "bottom left corner");
         assert!(cells.contains(&(29, 8, '┛')), "bottom right corner");
         assert!(
@@ -112,7 +124,10 @@ mod tests {
             .iter()
             .map(|c| c.character)
             .collect();
-        assert!(top_row.starts_with("┏━ SWAP ━"), "the label is on the top border");
+        assert!(
+            top_row.starts_with("┏━ SWAP ━"),
+            "the label is on the top border"
+        );
         assert!(top_row.ends_with('┓'));
     }
 

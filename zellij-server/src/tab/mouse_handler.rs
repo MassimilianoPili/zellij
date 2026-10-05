@@ -126,7 +126,10 @@ impl DropZone {
             None
         };
         match (horizontal, vertical) {
-            (Some((horizontal_zone, horizontal_distance)), Some((vertical_zone, vertical_distance))) => {
+            (
+                Some((horizontal_zone, horizontal_distance)),
+                Some((vertical_zone, vertical_distance)),
+            ) => {
                 if vertical_distance < horizontal_distance {
                     vertical_zone
                 } else {
@@ -1831,7 +1834,11 @@ impl MouseHandler {
         None
     }
 
-    pub(crate) fn focus_pane_at(tab: &mut Tab, point: &Position, client_id: ClientId) -> Result<()> {
+    pub(crate) fn focus_pane_at(
+        tab: &mut Tab,
+        point: &Position,
+        client_id: ClientId,
+    ) -> Result<()> {
         let err_context =
             || format!("failed to focus pane at position {point:?} for client {client_id}");
 
@@ -2204,7 +2211,8 @@ mod tests {
     #[test]
     fn drop_zone_is_the_side_in_the_outer_quarter_and_center_elsewhere() {
         // a pane at x 10, y 0 with 40 columns and 20 rows
-        let zone_at = |line: i32, column: u16| DropZone::at(&Position::new(line, column), 10, 0, 40, 20);
+        let zone_at =
+            |line: i32, column: u16| DropZone::at(&Position::new(line, column), 10, 0, 40, 20);
         assert_eq!(zone_at(10, 12), DropZone::Left);
         assert_eq!(zone_at(10, 48), DropZone::Right);
         assert_eq!(zone_at(1, 30), DropZone::Top);
