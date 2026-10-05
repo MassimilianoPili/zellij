@@ -200,6 +200,113 @@ pub fn hover_hint_variants() -> BTreeMap<usize, StyledText> {
     variants
 }
 
+pub fn title_drag_segments(tier: HintTier) -> Vec<HintSegment> {
+    match tier {
+        HintTier::Full => vec![
+            HintSegment::plain(" <"),
+            HintSegment::emphasis_2("drag"),
+            HintSegment::plain("> to move, "),
+            HintSegment::emphasis_2("Ctrl"),
+            HintSegment::plain(" <"),
+            HintSegment::emphasis_2("drag"),
+            HintSegment::plain("> to resize "),
+        ],
+        HintTier::Medium => vec![
+            HintSegment::plain(" <"),
+            HintSegment::emphasis_2("drag"),
+            HintSegment::plain("> move, "),
+            HintSegment::emphasis_2("Ctrl"),
+            HintSegment::plain(" <"),
+            HintSegment::emphasis_2("drag"),
+            HintSegment::plain("> resize "),
+        ],
+        HintTier::Minimal => vec![
+            HintSegment::plain(" <"),
+            HintSegment::emphasis_2("drag"),
+            HintSegment::plain("> move "),
+        ],
+    }
+}
+
+pub fn title_drag_hint_variants() -> BTreeMap<usize, StyledText> {
+    let mut variants = BTreeMap::new();
+    for tier in ALL_TIERS {
+        let styled_text = segments_to_styled_text(&title_drag_segments(tier));
+        variants.insert(styled_text.text.width(), styled_text);
+    }
+    variants
+}
+
+pub fn pane_drop_segments(tier: HintTier) -> Vec<HintSegment> {
+    match tier {
+        HintTier::Full => vec![
+            HintSegment::plain(" drop on the "),
+            HintSegment::emphasis_2("side"),
+            HintSegment::plain(" of a pane to dock, in its "),
+            HintSegment::emphasis_2("middle"),
+            HintSegment::plain(" to swap, on a "),
+            HintSegment::emphasis_2("tab"),
+            HintSegment::plain(" to move "),
+        ],
+        HintTier::Medium => vec![
+            HintSegment::plain(" "),
+            HintSegment::emphasis_2("side"),
+            HintSegment::plain(": dock, "),
+            HintSegment::emphasis_2("middle"),
+            HintSegment::plain(": swap, "),
+            HintSegment::emphasis_2("tab"),
+            HintSegment::plain(": move "),
+        ],
+        HintTier::Minimal => vec![
+            HintSegment::plain(" "),
+            HintSegment::emphasis_2("drop"),
+            HintSegment::plain(" to move "),
+        ],
+    }
+}
+
+pub fn pane_drop_hint_variants() -> BTreeMap<usize, StyledText> {
+    let mut variants = BTreeMap::new();
+    for tier in ALL_TIERS {
+        let styled_text = segments_to_styled_text(&pane_drop_segments(tier));
+        variants.insert(styled_text.text.width(), styled_text);
+    }
+    variants
+}
+
+pub fn tab_drop_segments(tier: HintTier) -> Vec<HintSegment> {
+    match tier {
+        HintTier::Full => vec![
+            HintSegment::plain(" drop on a "),
+            HintSegment::emphasis_2("pane"),
+            HintSegment::plain(" to bring the tab's panes here, on a "),
+            HintSegment::emphasis_2("tab"),
+            HintSegment::plain(" to reorder "),
+        ],
+        HintTier::Medium => vec![
+            HintSegment::plain(" "),
+            HintSegment::emphasis_2("pane"),
+            HintSegment::plain(": merge, "),
+            HintSegment::emphasis_2("tab"),
+            HintSegment::plain(": reorder "),
+        ],
+        HintTier::Minimal => vec![
+            HintSegment::plain(" "),
+            HintSegment::emphasis_2("drop"),
+            HintSegment::plain(" to move "),
+        ],
+    }
+}
+
+pub fn tab_drop_hint_variants() -> BTreeMap<usize, StyledText> {
+    let mut variants = BTreeMap::new();
+    for tier in ALL_TIERS {
+        let styled_text = segments_to_styled_text(&tab_drop_segments(tier));
+        variants.insert(styled_text.text.width(), styled_text);
+    }
+    variants
+}
+
 pub fn resize_segments(
     is_floating: bool,
     mouse_scroll_resize: bool,
@@ -363,6 +470,13 @@ mod tests {
                 assert!(hint.text.contains("drag borders"));
             }
         }
+    }
+
+    #[test]
+    fn drag_hint_variants_have_a_distinct_width_for_every_tier() {
+        assert_eq!(title_drag_hint_variants().len(), 3);
+        assert_eq!(pane_drop_hint_variants().len(), 3);
+        assert_eq!(tab_drop_hint_variants().len(), 3);
     }
 
     #[test]

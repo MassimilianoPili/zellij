@@ -45,6 +45,27 @@ use std::{
     time::Instant,
 };
 
+/// The side of a pane on which another pane is docked
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl DockSide {
+    fn split_direction(&self) -> SplitDirection {
+        match self {
+            DockSide::Left | DockSide::Right => SplitDirection::Vertical,
+            DockSide::Top | DockSide::Bottom => SplitDirection::Horizontal,
+        }
+    }
+    fn pane_takes_first_half(&self) -> bool {
+        matches!(self, DockSide::Left | DockSide::Top)
+    }
+}
+
 fn pane_content_offset(position_and_size: &PaneGeom, viewport: &Viewport) -> (usize, usize) {
     // (columns_offset, rows_offset)
     // if the pane is not on the bottom or right edge on the screen, we need to reserve one space
@@ -870,6 +891,83 @@ impl TiledPanes {
             self.panes.insert(pid, new_pane);
             self.relayout(SplitDirection::Horizontal);
         }
+    }
+    fn dock_target_geom(&mut self, target_pane_id: PaneId) -> Option<PaneGeom> {
+        let target_geom = self.panes.get(&target_pane_id)?.position_and_size();
+        if target_geom.is_stacked() {
+            self.position_and_size_of_stack(&target_pane_id)
+        } else {
+            Some(target_geom)
+        }
+    }
+    pub fn can_dock_pane_beside(&mut self, target_pane_id: PaneId, side: DockSide) -> bool {
+        let can_split = match side.split_direction() {
+            SplitDirection::Vertical => self.can_split_pane_id_vertically(target_pane_id),
+            SplitDirection::Horizontal => self.can_split_pane_id_horizontally(target_pane_id),
+        };
+        let panes_in_target_stack = self.pane_ids_in_stack_of_pane_id(&target_pane_id).len();
+        if !can_split
+            || panes_in_target_stack == 0
+            || side.split_direction() == SplitDirection::Vertical
+        {
+            return can_split;
+        }
+        // a stack that loses half of its rows still needs room for all of its one-line panes
+        self.dock_target_geom(target_pane_id)
+            .and_then(|geom| split(SplitDirection::Horizontal, &geom))
+            .map(|(first, second)| {
+                first.rows.as_usize().min(second.rows.as_usize())
+                    >= panes_in_target_stack + MIN_TERMINAL_HEIGHT
+            })
+            .unwrap_or(false)
+    }
+    /// Places the pane beside the target pane, giving it the half of the target on that side.
+    /// If this is not possible, the pane is returned so that it is never lost.
+    pub fn dock_pane_beside(
+        &mut self,
+        mut pane: Box<dyn Pane>,
+        target_pane_id: PaneId,
+        side: DockSide,
+    ) -> std::result::Result<(), Box<dyn Pane>> {
+        let pane_id = pane.pid();
+        let Some(target_is_stacked) = self
+            .panes
+            .get(&target_pane_id)
+            .map(|p| p.position_and_size().is_stacked())
+        else {
+            return Err(pane);
+        };
+        let Some(target_geom) = self.dock_target_geom(target_pane_id) else {
+            return Err(pane);
+        };
+        let Some((first_half, second_half)) = split(side.split_direction(), &target_geom) else {
+            return Err(pane);
+        };
+        let (mut pane_geom, mut new_target_geom) = if side.pane_takes_first_half() {
+            (first_half, second_half)
+        } else {
+            (second_half, first_half)
+        };
+        // the target keeps its place in the layout, the docked pane gets a new one
+        new_target_geom.logical_position = target_geom.logical_position;
+        pane_geom.logical_position = None;
+        if target_is_stacked {
+            if let Err(e) = StackedPanes::new_from_btreemap(&mut self.panes, &self.panes_to_hide)
+                .resize_panes_in_stack(&target_pane_id, new_target_geom)
+            {
+                log::error!("Failed to resize stack: {}", e);
+                return Err(pane);
+            }
+        } else if let Some(target_pane) = self.panes.get_mut(&target_pane_id) {
+            target_pane.set_geom(new_target_geom);
+        }
+        pane.set_geom(pane_geom);
+        self.panes.insert(pane_id, pane);
+        self.relayout(match side.split_direction() {
+            SplitDirection::Vertical => SplitDirection::Horizontal,
+            SplitDirection::Horizontal => SplitDirection::Vertical,
+        });
+        Ok(())
     }
     pub fn focus_pane_for_all_clients(&mut self, pane_id: PaneId) {
         let connected_clients: Vec<ClientId> =
@@ -2436,39 +2534,70 @@ impl TiledPanes {
             self.reapply_pane_frames();
         }
 
-        let current_position = self.panes.get(&pane_id).unwrap();
-        let prev_geom = current_position.position_and_size();
-        let prev_geom_override = current_position.geom_override();
-
-        let new_position = self.panes.get_mut(&new_position_id).unwrap();
-        let next_geom = new_position.position_and_size();
-        let next_geom_override = new_position.geom_override();
-        new_position.set_geom(prev_geom);
-        if let Some(geom) = prev_geom_override {
-            new_position.set_geom_override(geom);
+        self.swap_pane_geoms(pane_id, new_position_id);
+        self.reapply_pane_focus();
+        self.set_pane_frames(self.pane_frame_style);
+    }
+    /// Swaps the position, size and any size override of two tiled panes and resizes their ptys
+    fn swap_pane_geoms(&mut self, first_pane_id: PaneId, second_pane_id: PaneId) {
+        let Some((first_geom, first_geom_override)) = self
+            .panes
+            .get(&first_pane_id)
+            .map(|p| (p.position_and_size(), p.geom_override()))
+        else {
+            return;
+        };
+        let Some(second_pane) = self.panes.get_mut(&second_pane_id) else {
+            return;
+        };
+        let second_geom = second_pane.position_and_size();
+        let second_geom_override = second_pane.geom_override();
+        second_pane.set_geom(first_geom);
+        if let Some(geom) = first_geom_override {
+            second_pane.set_geom_override(geom);
         }
         resize_pty!(
-            new_position,
+            second_pane,
             self.os_api,
             self.senders,
             self.character_cell_size
         )
-        .unwrap();
-        new_position.set_should_render(true);
+        .non_fatal();
+        second_pane.set_should_render(true);
 
-        let current_position = self.panes.get_mut(&pane_id).unwrap();
-        current_position.set_geom(next_geom);
-        if let Some(geom) = next_geom_override {
-            current_position.set_geom_override(geom);
+        if let Some(first_pane) = self.panes.get_mut(&first_pane_id) {
+            first_pane.set_geom(second_geom);
+            if let Some(geom) = second_geom_override {
+                first_pane.set_geom_override(geom);
+            }
+            resize_pty!(
+                first_pane,
+                self.os_api,
+                self.senders,
+                self.character_cell_size
+            )
+            .non_fatal();
+            first_pane.set_should_render(true);
         }
-        resize_pty!(
-            current_position,
-            self.os_api,
-            self.senders,
-            self.character_cell_size
-        )
-        .unwrap();
-        current_position.set_should_render(true);
+    }
+    /// Swaps two tiled panes, eg. when one is dragged with the mouse and dropped on the other
+    pub fn swap_panes(&mut self, first_pane_id: PaneId, second_pane_id: PaneId) {
+        let stack_of = |panes: &BTreeMap<PaneId, Box<dyn Pane>>, pane_id: PaneId| {
+            panes.get(&pane_id).and_then(|p| p.current_geom().stacked)
+        };
+        let first_stack = stack_of(&self.panes, first_pane_id);
+        let second_stack = stack_of(&self.panes, second_pane_id);
+        // a pane in a stack has to be expanded so the other pane takes its visible slot, unless
+        // both are in the same stack
+        if first_stack.is_none() || first_stack != second_stack {
+            for (pane_id, stack) in [(second_pane_id, second_stack), (first_pane_id, first_stack)] {
+                if stack.is_some() {
+                    self.expand_pane_in_stack(pane_id);
+                }
+            }
+            self.reapply_pane_frames();
+        }
+        self.swap_pane_geoms(first_pane_id, second_pane_id);
         self.reapply_pane_focus();
         self.set_pane_frames(self.pane_frame_style);
     }
@@ -2488,39 +2617,7 @@ impl TiledPanes {
             .next_selectable_pane_id_below(&pane_id, false)
             .or_else(|| pane_grid.progress_stack_down_if_in_stack(&pane_id));
         if let Some(p) = next_index {
-            let current_position = self.panes.get(&pane_id).unwrap();
-            let prev_geom = current_position.position_and_size();
-            let prev_geom_override = current_position.geom_override();
-
-            let new_position = self.panes.get_mut(&p).unwrap();
-            let next_geom = new_position.position_and_size();
-            let next_geom_override = new_position.geom_override();
-            new_position.set_geom(prev_geom);
-            if let Some(geom) = prev_geom_override {
-                new_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                new_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            new_position.set_should_render(true);
-
-            let current_position = self.panes.get_mut(&pane_id).unwrap();
-            current_position.set_geom(next_geom);
-            if let Some(geom) = next_geom_override {
-                current_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                current_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            current_position.set_should_render(true);
+            self.swap_pane_geoms(pane_id, p);
             self.reapply_pane_focus();
             self.set_pane_frames(self.pane_frame_style);
         }
@@ -2539,39 +2636,7 @@ impl TiledPanes {
         );
         let next_index = pane_grid.next_selectable_pane_id_to_the_left(&pane_id);
         if let Some(p) = next_index {
-            let current_position = self.panes.get(&pane_id).unwrap();
-            let prev_geom = current_position.position_and_size();
-            let prev_geom_override = current_position.geom_override();
-
-            let new_position = self.panes.get_mut(&p).unwrap();
-            let next_geom = new_position.position_and_size();
-            let next_geom_override = new_position.geom_override();
-            new_position.set_geom(prev_geom);
-            if let Some(geom) = prev_geom_override {
-                new_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                new_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            new_position.set_should_render(true);
-
-            let current_position = self.panes.get_mut(&pane_id).unwrap();
-            current_position.set_geom(next_geom);
-            if let Some(geom) = next_geom_override {
-                current_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                current_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            current_position.set_should_render(true);
+            self.swap_pane_geoms(pane_id, p);
             self.reapply_pane_focus();
             self.set_pane_frames(self.pane_frame_style);
         }
@@ -2590,39 +2655,7 @@ impl TiledPanes {
         );
         let next_index = pane_grid.next_selectable_pane_id_to_the_right(&pane_id);
         if let Some(p) = next_index {
-            let current_position = self.panes.get(&pane_id).unwrap();
-            let prev_geom = current_position.position_and_size();
-            let prev_geom_override = current_position.geom_override();
-
-            let new_position = self.panes.get_mut(&p).unwrap();
-            let next_geom = new_position.position_and_size();
-            let next_geom_override = new_position.geom_override();
-            new_position.set_geom(prev_geom);
-            if let Some(geom) = prev_geom_override {
-                new_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                new_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            new_position.set_should_render(true);
-
-            let current_position = self.panes.get_mut(&pane_id).unwrap();
-            current_position.set_geom(next_geom);
-            if let Some(geom) = next_geom_override {
-                current_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                current_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            current_position.set_should_render(true);
+            self.swap_pane_geoms(pane_id, p);
             self.reapply_pane_focus();
             self.set_pane_frames(self.pane_frame_style);
         }
@@ -2643,39 +2676,7 @@ impl TiledPanes {
             .next_selectable_pane_id_above(&pane_id, false)
             .or_else(|| pane_grid.progress_stack_up_if_in_stack(&pane_id));
         if let Some(p) = next_index {
-            let current_position = self.panes.get(&pane_id).unwrap();
-            let prev_geom = current_position.position_and_size();
-            let prev_geom_override = current_position.geom_override();
-
-            let new_position = self.panes.get_mut(&p).unwrap();
-            let next_geom = new_position.position_and_size();
-            let next_geom_override = new_position.geom_override();
-            new_position.set_geom(prev_geom);
-            if let Some(geom) = prev_geom_override {
-                new_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                new_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            new_position.set_should_render(true);
-
-            let current_position = self.panes.get_mut(&pane_id).unwrap();
-            current_position.set_geom(next_geom);
-            if let Some(geom) = next_geom_override {
-                current_position.set_geom_override(geom);
-            }
-            resize_pty!(
-                current_position,
-                self.os_api,
-                self.senders,
-                self.character_cell_size
-            )
-            .unwrap();
-            current_position.set_should_render(true);
+            self.swap_pane_geoms(pane_id, p);
             self.reapply_pane_focus();
             self.set_pane_frames(self.pane_frame_style);
         }

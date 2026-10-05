@@ -1305,6 +1305,25 @@ pub fn focus_host_session() {
     unsafe { host_run_plugin_command() };
 }
 
+/// Start dragging a tab (by its id) with the mouse, eg. from a left click on it in a tab bar.
+/// While the mouse button is held, the tab can be dropped on a pane to bring its panes there, or
+/// on another tab to move it there. Releasing the button without moving switches to the tab, as
+/// does calling this without the mouse_drag_panes option.
+pub fn start_tab_drag(tab_id: usize) {
+    let plugin_command = PluginCommand::StartTabDrag(tab_id as u64);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
+/// Move a tab (by its id) to a position in the tab bar (0 is the first tab)
+pub fn move_tab_to_position(tab_id: usize, position: usize) {
+    let plugin_command = PluginCommand::MoveTabToPosition(tab_id as u64, position as u64);
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+}
+
 /// Toggle the UI pane frames on or off
 pub fn toggle_pane_frames() {
     let plugin_command = PluginCommand::TogglePaneFrames;

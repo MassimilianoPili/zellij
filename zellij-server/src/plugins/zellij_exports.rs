@@ -576,6 +576,10 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                     ),
                     PluginCommand::SwitchTabToId(tab_id) => switch_tab_to_id(env, tab_id),
                     PluginCommand::GoToTabWithId(tab_id) => go_to_tab_with_id(env, tab_id),
+                    PluginCommand::StartTabDrag(tab_id) => start_tab_drag(env, tab_id),
+                    PluginCommand::MoveTabToPosition(tab_id, position) => {
+                        move_tab_to_position(env, tab_id, position)
+                    },
                     PluginCommand::CloseTabWithId(tab_id) => close_tab_with_id(env, tab_id),
                     PluginCommand::RenameTabWithId(tab_id, new_name) => {
                         rename_tab_with_id(env, tab_id, &new_name)
@@ -4939,6 +4943,26 @@ fn go_to_tab_with_id(env: &PluginEnv, tab_id: u64) {
         .non_fatal();
 }
 
+fn start_tab_drag(env: &PluginEnv, tab_id: u64) {
+    env.senders
+        .send_to_screen(ScreenInstruction::StartTabDrag(
+            tab_id as usize,
+            env.client_id,
+        ))
+        .with_context(|| format!("failed to start dragging tab {} from plugin {}", tab_id, env.name()))
+        .non_fatal();
+}
+
+fn move_tab_to_position(env: &PluginEnv, tab_id: u64, position: u64) {
+    env.senders
+        .send_to_screen(ScreenInstruction::MoveTabToPosition(
+            tab_id as usize,
+            position as usize,
+        ))
+        .with_context(|| format!("failed to move tab {} from plugin {}", tab_id, env.name()))
+        .non_fatal();
+}
+
 fn close_tab_with_id(env: &PluginEnv, tab_id: u64) {
     let tab_id = tab_id as usize;
     let _ = env
@@ -5544,6 +5568,8 @@ fn check_command_permission(
         | PluginCommand::BreakPanesToTabWithIndex(..)
         | PluginCommand::SwitchTabToId(..)
         | PluginCommand::GoToTabWithId(..)
+        | PluginCommand::StartTabDrag(..)
+        | PluginCommand::MoveTabToPosition(..)
         | PluginCommand::CloseTabWithId(..)
         | PluginCommand::RenameTabWithId(..)
         | PluginCommand::BreakPanesToTabWithId(..)

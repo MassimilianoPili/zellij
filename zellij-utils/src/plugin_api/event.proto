@@ -73,6 +73,8 @@ enum EventType {
     HintText = 48;
     ActivePaneScroll = 49;
     PaneDropped = 52;
+    PaneDragHover = 53;
+    TabDropped = 54;
 }
 
 message EventNameList {
@@ -125,6 +127,8 @@ message Event {
     HintTextPayload hint_text_payload = 42;
     ActivePaneScrollPayload active_pane_scroll_payload = 43;
     PaneDroppedPayload pane_dropped_payload = 46;
+    PaneDragHoverPayload pane_drag_hover_payload = 47;
+    TabDroppedPayload tab_dropped_payload = 48;
   }
 }
 
@@ -598,6 +602,18 @@ message HighlightClickedPayload {
 
 message PaneDroppedPayload {
   PaneId pane_id = 1;
+  int64 line = 2;
+  uint64 column = 3;
+}
+
+message PaneDragHoverPayload {
+  PaneId pane_id = 1;
+  int64 line = 2;
+  uint64 column = 3;
+}
+
+message TabDroppedPayload {
+  uint64 tab_id = 1;
   int64 line = 2;
   uint64 column = 3;
 }

@@ -69,6 +69,11 @@ pub enum BackgroundJob {
     ClearHelpText {
         client_id: ClientId,
     },
+    // a pane dragged with the mouse is over the tab bar; if it stays still, the tab under it
+    // becomes active
+    DragHoverTab {
+        client_id: ClientId,
+    },
     ClearCommandOutputFlash {
         pane_id: PaneId,
     },
@@ -102,6 +107,7 @@ impl From<&BackgroundJob> for BackgroundJobContext {
                 BackgroundJobContext::QueryZellijWebServerStatus
             },
             BackgroundJob::ClearHelpText { .. } => BackgroundJobContext::ClearHelpText,
+            BackgroundJob::DragHoverTab { .. } => BackgroundJobContext::DragHoverTab,
             BackgroundJob::ClearCommandOutputFlash { .. } => {
                 BackgroundJobContext::ClearCommandOutputFlash
             },
@@ -124,6 +130,7 @@ static UPDATE_AND_REPORT_CWDS_INTERVAL_MS: u64 = 1000;
 static DEFAULT_SERIALIZATION_INTERVAL: u64 = 60000;
 static REPAINT_DELAY_MS: u64 = 10;
 static HELP_TEXT_DEBOUNCE_DURATION: u64 = 5000;
+static DRAG_HOVER_TAB_DELAY_MS: u64 = 600;
 static COMMAND_OUTPUT_FLASH_DURATION_MS: u64 = 400;
 
 #[derive(Clone)]
@@ -165,6 +172,8 @@ pub(crate) fn background_jobs_main(
                                                                            // milliseconds
     let last_render_request: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     let pending_help_text_clear: Arc<Mutex<HashMap<ClientId, Instant>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let pending_drag_hover_tab: Arc<Mutex<HashMap<ClientId, Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let pending_command_output_flash_clear: Arc<Mutex<HashMap<PaneId, Instant>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -563,6 +572,56 @@ pub(crate) fn background_jobs_main(
                                     None => {
                                         let _ = senders.send_to_server(
                                             ServerInstruction::ClearMouseHelpText(client_id),
+                                        );
+                                        break;
+                                    },
+                                }
+                            }
+                        }
+                    });
+                }
+            },
+            BackgroundJob::DragHoverTab { client_id } => {
+                // every new hover position restarts the wait, so the tab only becomes active
+                // once the mouse stays still over it
+                let should_spawn = {
+                    let mut pending = pending_drag_hover_tab.lock().unwrap();
+                    let should_spawn = !pending.contains_key(&client_id);
+                    pending.insert(client_id, Instant::now());
+                    should_spawn
+                };
+
+                if should_spawn {
+                    runtime.spawn({
+                        let senders = bus.senders.clone();
+                        let pending = pending_drag_hover_tab.clone();
+                        let delay = Duration::from_millis(DRAG_HOVER_TAB_DELAY_MS);
+                        async move {
+                            tokio::time::sleep(delay).await;
+                            loop {
+                                let next_sleep_duration = {
+                                    let mut pending = pending.lock().unwrap();
+                                    match pending.get(&client_id) {
+                                        Some(&last_hover_time) => {
+                                            let time_since_hover =
+                                                Instant::now().duration_since(last_hover_time);
+                                            if time_since_hover >= delay {
+                                                pending.remove(&client_id);
+                                                None
+                                            } else {
+                                                Some(delay.saturating_sub(time_since_hover))
+                                            }
+                                        },
+                                        None => break,
+                                    }
+                                };
+                                match next_sleep_duration {
+                                    Some(duration) => {
+                                        tokio::time::sleep(duration).await;
+                                    },
+                                    None => {
+                                        let _ = senders.send_to_screen(
+                                            ScreenInstruction::DragHoverElapsed(client_id),
                                         );
                                         break;
                                     },

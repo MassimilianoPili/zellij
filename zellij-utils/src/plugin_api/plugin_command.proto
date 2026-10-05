@@ -218,6 +218,8 @@ enum CommandName {
   NewPane = 226;
   ToggleFocusNoUiFullscreen = 227;
   FocusHostSession = 228;
+  StartTabDrag = 237;
+  MoveTabToPosition = 238;
 }
 
 message PluginCommand {
@@ -378,6 +380,8 @@ message PluginCommand {
     NewTiledPaneInTabPayload new_tiled_pane_in_tab_payload = 169;
     SetPaneFrameStylePayload set_pane_frame_style_payload = 170;
     ToggleFloatingPanesPayload toggle_floating_panes_payload = 171;
+    StartTabDragPayload start_tab_drag_payload = 180;
+    MoveTabToPositionPayload move_tab_to_position_payload = 181;
   }
 }
 
@@ -833,6 +837,15 @@ message SwitchTabToIdPayload {
 
 message GoToTabWithIdPayload {
   uint64 tab_id = 1;
+}
+
+message StartTabDragPayload {
+  uint64 tab_id = 1;
+}
+
+message MoveTabToPositionPayload {
+  uint64 tab_id = 1;
+  uint64 position = 2;
 }
 
 message CloseTabWithIdPayload {

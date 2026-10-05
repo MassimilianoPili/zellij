@@ -1047,6 +1047,22 @@ pub enum Event {
         line: isize,
         column: usize,
     },
+    /// A pane being dragged with the mouse stayed still over this plugin's pane for a moment, at
+    /// this line and column relative to the plugin's content (eg. over a tab in the tab bar, which
+    /// then switches to it)
+    PaneDragHover {
+        pane_id: PaneId,
+        line: isize,
+        column: usize,
+    },
+    /// A tab (by its id) dragged with the mouse from the tab bar was dropped on this plugin's pane,
+    /// at this line and column relative to the plugin's content (eg. on another tab of the tab
+    /// bar, to move it there)
+    TabDropped {
+        tab_id: usize,
+        line: isize,
+        column: usize,
+    },
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -3697,6 +3713,8 @@ pub enum PluginCommand {
     DeleteAllDeadSessionsAndReply,     // no payload; sends a response back
     SetSoftKeyboard(bool),
     FocusHostSession,
+    StartTabDrag(u64),           // u64 - tab_id
+    MoveTabToPosition(u64, u64), // u64 - tab_id, u64 - position
 }
 
 // Response type for plugin API methods that open a pane in a new tab
