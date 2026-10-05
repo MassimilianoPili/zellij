@@ -14058,76 +14058,286 @@ fn title_row_position(tab: &Tab, pane_id: PaneId) -> Position {
     Position::new(pane.y() as i32, (pane.get_content_x() + 2) as u16)
 }
 
-fn received_pane_dropped(
-    mock_plugin_receiver: &Receiver<(PluginInstruction, ErrorContext)>,
-) -> Option<(u32, PaneId, isize, usize)> {
-    let mut pane_dropped = None;
-    while let Ok((instruction, _ctx)) = mock_plugin_receiver.try_recv() {
-        if let PluginInstruction::PaneDropped {
-            plugin_id,
-            pane_id,
-            line,
-            column,
-            ..
-        } = instruction
-        {
-            pane_dropped = Some((plugin_id, pane_id, line, column));
+use crate::panes::DockSide;
+
+fn create_tab_with_three_columns() -> Tab {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let base_layout = r#"
+        layout {
+            pane split_direction="vertical" {
+                pane
+                pane
+                pane
+            }
         }
-    }
-    pane_dropped
+    "#;
+    let swap_layouts = r#"
+        layout {
+            swap_tiled_layout name="columns" {
+                tab max_panes=4 {
+                    pane split_direction="vertical" { children; }
+                }
+            }
+        }
+    "#;
+    let (base_layout, base_floating_layout) =
+        Layout::from_kdl(base_layout, Some("file_name.kdl".into()), None, None)
+            .unwrap()
+            .template
+            .unwrap();
+    let swap_layout =
+        Layout::from_kdl(swap_layouts, Some("file_name.kdl".into()), None, None).unwrap();
+    let mut tab = create_new_tab_with_swap_layouts(
+        size,
+        ModeInfo::default(),
+        (
+            swap_layout.swap_tiled_layouts.clone(),
+            swap_layout.swap_floating_layouts.clone(),
+        ),
+        Some((
+            base_layout,
+            base_floating_layout,
+            vec![(1, None), (2, None), (3, None)],
+            vec![],
+            HashMap::new(),
+        )),
+        true,
+        true,
+    );
+    tab.update_mouse_drag_panes(true);
+    tab
+}
+
+fn panes_from_left_to_right(tab: &Tab, pane_ids: &[PaneId]) -> Vec<PaneId> {
+    let mut panes: Vec<(usize, PaneId)> = pane_ids
+        .iter()
+        .map(|pane_id| (tab.get_pane_with_id(*pane_id).unwrap().x(), *pane_id))
+        .collect();
+    panes.sort();
+    panes.into_iter().map(|(_, pane_id)| pane_id).collect()
 }
 
 #[test]
-fn dragging_pane_title_onto_plugin_sends_pane_dropped() {
+fn press_on_pane_title_starts_a_pane_drag_only_with_mouse_drag_panes() {
     let client_id = 1;
-    let (mut tab, mock_plugin_receiver) = create_tab_with_terminal_and_plugin_pane(false);
+    let (mut tab, _mock_plugin_receiver) = create_tab_with_terminal_and_plugin_pane(false);
     let title_position = title_row_position(&tab, PaneId::Terminal(1));
+
+    let effect = tab
+        .handle_mouse_event(&MouseEvent::new_left_press_event(title_position), client_id)
+        .unwrap();
+    assert_eq!(
+        effect.start_pane_drag,
+        Some(PaneId::Terminal(1)),
+        "The screen is told to start dragging the pane"
+    );
+
+    tab.update_mouse_drag_panes(false);
+    let effect = tab
+        .handle_mouse_event(&MouseEvent::new_left_press_event(title_position), client_id)
+        .unwrap();
+    assert_eq!(
+        effect.start_pane_drag, None,
+        "Without the option, a press on the title resizes as before"
+    );
+}
+
+#[test]
+fn drop_target_is_an_unselectable_plugin_or_a_zone_of_a_pane() {
+    use crate::tab::{DropTarget, DropZone};
+    let (mut tab, _mock_plugin_receiver) = create_tab_with_terminal_and_plugin_pane(false);
+    // like the tab bar
+    tab.get_pane_with_id_mut(PaneId::Plugin(9))
+        .unwrap()
+        .set_selectable(false);
     let plugin_pane = tab.get_pane_with_id(PaneId::Plugin(9)).unwrap();
-    let drop_position = Position::new(
+    let inside_plugin = Position::new(
         (plugin_pane.get_content_y() + 1) as i32,
         (plugin_pane.get_content_x() + 3) as u16,
     );
-
-    tab.handle_mouse_event(&MouseEvent::new_left_press_event(title_position), client_id)
-        .unwrap();
-    tab.handle_mouse_event(&MouseEvent::new_left_motion_event(drop_position), client_id)
-        .unwrap();
-    tab.handle_mouse_event(
-        &MouseEvent::new_left_release_event(drop_position),
-        client_id,
-    )
-    .unwrap();
+    let terminal_pane = tab.get_pane_with_id(PaneId::Terminal(1)).unwrap();
+    let middle_line = (terminal_pane.y() + terminal_pane.rows() / 2) as i32;
+    let middle = Position::new(
+        middle_line,
+        (terminal_pane.x() + terminal_pane.cols() / 2) as u16,
+    );
+    let left_edge = Position::new(middle_line, (terminal_pane.x() + 1) as u16);
 
     assert_eq!(
-        received_pane_dropped(&mock_plugin_receiver),
-        Some((9, PaneId::Terminal(1), 1, 3)),
-        "The plugin under the cursor is told which pane was dropped on it and where"
+        tab.drop_target_at(&inside_plugin),
+        Some(DropTarget::Plugin {
+            pane_id: PaneId::Plugin(9),
+            relative_position: Position::new(1, 3),
+        })
+    );
+    assert_eq!(
+        tab.drop_target_at(&middle),
+        Some(DropTarget::Pane {
+            pane_id: PaneId::Terminal(1),
+            zone: DropZone::Center,
+        })
+    );
+    assert_eq!(
+        tab.drop_target_at(&left_edge),
+        Some(DropTarget::Pane {
+            pane_id: PaneId::Terminal(1),
+            zone: DropZone::Left,
+        })
     );
 }
 
 #[test]
-fn releasing_pane_title_without_moving_focuses_the_pane() {
+fn swapping_two_panes_exchanges_their_places_and_keeps_the_layout() {
     let client_id = 1;
-    let (mut tab, mock_plugin_receiver) = create_tab_with_terminal_and_plugin_pane(true);
-    let title_position = title_row_position(&tab, PaneId::Terminal(1));
+    let mut tab = create_tab_with_three_columns();
+    let all_panes = [
+        PaneId::Terminal(1),
+        PaneId::Terminal(2),
+        PaneId::Terminal(3),
+    ];
+    let was_damaged = tab.swap_layouts.is_tiled_damaged();
 
-    tab.handle_mouse_event(&MouseEvent::new_left_press_event(title_position), client_id)
-        .unwrap();
-    tab.handle_mouse_event(
-        &MouseEvent::new_left_release_event(title_position),
-        client_id,
-    )
-    .unwrap();
+    tab.swap_tiled_panes(PaneId::Terminal(1), PaneId::Terminal(3), client_id);
 
     assert_eq!(
-        received_pane_dropped(&mock_plugin_receiver),
-        None,
-        "A click on the title does not drop the pane anywhere"
+        panes_from_left_to_right(&tab, &all_panes),
+        vec![
+            PaneId::Terminal(3),
+            PaneId::Terminal(2),
+            PaneId::Terminal(1)
+        ]
+    );
+    assert_eq!(
+        tab.swap_layouts.is_tiled_damaged(),
+        was_damaged,
+        "A swap does not change the layout"
     );
     assert_eq!(
         tab.get_active_pane_id(client_id),
         Some(PaneId::Terminal(1)),
-        "A click on the title focuses the pane"
+        "The dragged pane is focused"
+    );
+}
+
+#[test]
+fn docking_a_pane_beside_a_column_keeps_columns_of_equal_width() {
+    let client_id = 1;
+    let mut tab = create_tab_with_three_columns();
+    let all_panes = [
+        PaneId::Terminal(1),
+        PaneId::Terminal(2),
+        PaneId::Terminal(3),
+    ];
+
+    tab.dock_pane(
+        PaneId::Terminal(1),
+        PaneId::Terminal(3),
+        DockSide::Left,
+        client_id,
+    )
+    .unwrap();
+
+    assert_eq!(
+        panes_from_left_to_right(&tab, &all_panes),
+        vec![
+            PaneId::Terminal(2),
+            PaneId::Terminal(1),
+            PaneId::Terminal(3)
+        ],
+        "The pane went to the left of the target"
+    );
+    let widths: Vec<usize> = all_panes
+        .iter()
+        .map(|pane_id| tab.get_pane_with_id(*pane_id).unwrap().cols())
+        .collect();
+    let (narrowest, widest) = (
+        *widths.iter().min().unwrap(),
+        *widths.iter().max().unwrap(),
+    );
+    assert!(
+        widest - narrowest <= 1,
+        "The columns are still of equal width: {:?}",
+        widths
+    );
+}
+
+#[test]
+fn docking_a_pane_below_another_one_makes_the_layout_manual() {
+    let client_id = 1;
+    let mut tab = create_tab_with_three_columns();
+
+    tab.dock_pane(
+        PaneId::Terminal(1),
+        PaneId::Terminal(3),
+        DockSide::Bottom,
+        client_id,
+    )
+    .unwrap();
+
+    let docked_pane = tab.get_pane_with_id(PaneId::Terminal(1)).unwrap();
+    let target_pane = tab.get_pane_with_id(PaneId::Terminal(3)).unwrap();
+    assert_eq!(docked_pane.x(), target_pane.x(), "Same column");
+    assert!(docked_pane.y() > target_pane.y(), "Below the target");
+    assert!(
+        tab.swap_layouts.is_tiled_damaged(),
+        "The columns layout no longer applies"
+    );
+}
+
+#[test]
+fn hovering_a_pane_title_shows_the_drag_hint() {
+    let client_id = 1;
+    let (mut tab, _mock_plugin_receiver) = create_tab_with_terminal_and_plugin_pane(false);
+    let title_position = title_row_position(&tab, PaneId::Terminal(1));
+
+    tab.handle_mouse_event(&MouseEvent::new_buttonless_motion(title_position), client_id)
+        .unwrap();
+
+    let hint_text = tab.resolve_hint_text(client_id);
+    assert!(
+        hint_text
+            .values()
+            .any(|styled_text| styled_text.text.contains("to move")),
+        "Got: {:?}",
+        hint_text
+    );
+}
+
+#[test]
+fn drag_feedback_draws_the_drop_zone_over_the_target_pane() {
+    use crate::tab::{DragFeedback, DropZone};
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let client_id = 1;
+    let (mut tab, _mock_plugin_receiver) = create_tab_with_terminal_and_plugin_pane(false);
+
+    tab.set_drag_feedback(
+        client_id,
+        DragFeedback {
+            dragging_tab: false,
+            drop_target: Some((PaneId::Terminal(1), DropZone::Center)),
+        },
+    );
+    let mut output = Output::default();
+    tab.render(&mut output, None).unwrap();
+    let snapshot = take_snapshot(
+        output.serialize().unwrap().get(&client_id).unwrap(),
+        size.rows,
+        size.cols,
+        Palette::default(),
+    );
+
+    assert!(snapshot.contains("SWAP"), "Got: {}", snapshot);
+    assert!(
+        tab.resolve_hint_text(client_id)
+            .values()
+            .any(|styled_text| styled_text.text.contains("swap")),
+        "During a drag, the hint tells what dropping does"
     );
 }
 

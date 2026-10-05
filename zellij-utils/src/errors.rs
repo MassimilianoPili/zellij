@@ -444,6 +444,9 @@ pub enum ScreenContext {
     SetFollowedClient,
     WatcherTerminalResize,
     ClearMouseHelpText,
+    DragHoverElapsed,
+    StartTabDrag,
+    MoveTabToPosition,
     SetPluginRegexHighlights,
     ClearPluginHighlights,
     DesktopNotificationResponse,
@@ -569,6 +572,8 @@ pub enum PluginContext {
     DetectPluginConfigChanges,
     HighlightClicked,
     PaneDropped,
+    PaneDragHover,
+    TabDropped,
 }
 
 /// Stack call representations corresponding to the different types of [`ClientInstruction`]s.
@@ -660,6 +665,7 @@ pub enum BackgroundJobContext {
     HighlightPanesWithMessage,
     QueryZellijWebServerStatus,
     ClearHelpText,
+    DragHoverTab,
     ClearCommandOutputFlash,
     FlashPaneBell,
     StopFlashPaneBell,

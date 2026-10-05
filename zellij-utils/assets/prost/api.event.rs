@@ -10,7 +10,7 @@ pub struct EventNameList {
 pub struct Event {
     #[prost(enumeration="EventType", tag="1")]
     pub name: i32,
-    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 46")]
+    #[prost(oneof="event::Payload", tags="2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 46, 47, 48")]
     pub payload: ::core::option::Option<event::Payload>,
 }
 /// Nested message and enum types in `Event`.
@@ -102,6 +102,10 @@ pub mod event {
         ActivePaneScrollPayload(super::ActivePaneScrollPayload),
         #[prost(message, tag="46")]
         PaneDroppedPayload(super::PaneDroppedPayload),
+        #[prost(message, tag="47")]
+        PaneDragHoverPayload(super::PaneDragHoverPayload),
+        #[prost(message, tag="48")]
+        TabDroppedPayload(super::TabDroppedPayload),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -838,6 +842,26 @@ pub struct PaneDroppedPayload {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PaneDragHoverPayload {
+    #[prost(message, optional, tag="1")]
+    pub pane_id: ::core::option::Option<PaneId>,
+    #[prost(int64, tag="2")]
+    pub line: i64,
+    #[prost(uint64, tag="3")]
+    pub column: u64,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TabDroppedPayload {
+    #[prost(uint64, tag="1")]
+    pub tab_id: u64,
+    #[prost(int64, tag="2")]
+    pub line: i64,
+    #[prost(uint64, tag="3")]
+    pub column: u64,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct InitialKeybindsPayload {
     #[prost(message, repeated, tag="1")]
     pub keybinds: ::prost::alloc::vec::Vec<InputModeKeybinds>,
@@ -909,6 +933,8 @@ pub enum EventType {
     HintText = 48,
     ActivePaneScroll = 49,
     PaneDropped = 52,
+    PaneDragHover = 53,
+    TabDropped = 54,
 }
 impl EventType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -966,6 +992,8 @@ impl EventType {
             EventType::HintText => "HintText",
             EventType::ActivePaneScroll => "ActivePaneScroll",
             EventType::PaneDropped => "PaneDropped",
+            EventType::PaneDragHover => "PaneDragHover",
+            EventType::TabDropped => "TabDropped",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1020,6 +1048,8 @@ impl EventType {
             "HintText" => Some(Self::HintText),
             "ActivePaneScroll" => Some(Self::ActivePaneScroll),
             "PaneDropped" => Some(Self::PaneDropped),
+            "PaneDragHover" => Some(Self::PaneDragHover),
+            "TabDropped" => Some(Self::TabDropped),
             _ => None,
         }
     }

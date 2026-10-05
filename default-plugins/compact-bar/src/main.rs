@@ -9,7 +9,7 @@ use std::cmp::{max, min};
 use std::collections::BTreeMap;
 use std::convert::TryInto;
 
-use tab::get_tab_to_focus;
+use tab::{get_clicked_line_part, get_tab_to_focus};
 use zellij_tile::prelude::*;
 
 use crate::clipboard_utils::{system_clipboard_error, text_copied_hint};
@@ -114,6 +114,17 @@ impl ZellijPlugin for State {
                 self.handle_pane_dropped(pane_id, column);
                 false
             },
+            Event::PaneDragHover { column, .. } => {
+                // a pane held over a tab switches to it, so it can be dropped beside a pane there
+                if !self.is_tooltip {
+                    self.handle_tab_hover_switch(column);
+                }
+                false
+            },
+            Event::TabDropped { tab_id, column, .. } => {
+                self.handle_tab_dropped(tab_id, column);
+                false
+            },
             Event::CopyToClipboard(copy_destination) => {
                 self.handle_clipboard_copy(copy_destination)
             },
@@ -184,6 +195,8 @@ impl State {
                 EventType::SystemClipboardFailure,
                 EventType::InitialKeybinds,
                 EventType::PaneDropped,
+                EventType::PaneDragHover,
+                EventType::TabDropped,
             ]
         };
 
@@ -382,8 +395,34 @@ impl State {
     }
 
     fn handle_tab_click(&self, col: usize) {
+        // the server switches to the tab on a click, or lets it be dragged elsewhere
+        if let Some(tab_id) = self.tab_id_at_column(col) {
+            start_tab_drag(tab_id);
+        }
+    }
+
+    fn tab_id_at_column(&self, col: usize) -> Option<usize> {
+        let position = get_clicked_line_part(&self.tab_line, col)?.tab_index?;
+        self.tabs
+            .iter()
+            .find(|tab| tab.position == position)
+            .map(|tab| tab.tab_id)
+    }
+
+    fn handle_tab_hover_switch(&self, col: usize) {
         if let Some(tab_idx) = get_tab_to_focus(&self.tab_line, self.active_tab_idx, col) {
             switch_tab_to(tab_idx.try_into().unwrap());
+        }
+    }
+
+    fn handle_tab_dropped(&self, tab_id: usize, col: usize) {
+        if self.is_tooltip {
+            return;
+        }
+        if let Some(position) =
+            get_clicked_line_part(&self.tab_line, col).and_then(|part| part.tab_index)
+        {
+            move_tab_to_position(tab_id, position);
         }
     }
 

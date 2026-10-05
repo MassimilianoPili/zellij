@@ -11123,6 +11123,252 @@ fn break_multiple_panes_to_tab_with_id_after_closing_a_tab() {
     );
 }
 
+fn create_screen_for_mouse_drags(
+    number_of_tabs: usize,
+) -> (Screen, Receiver<(PluginInstruction, ErrorContext)>) {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut screen = create_new_screen(size, true, true);
+    let (to_plugin, plugin_receiver): ChannelWithContext<PluginInstruction> = channels::unbounded();
+    screen
+        .bus
+        .senders
+        .replace_to_plugin(SenderWithContext::new(to_plugin));
+    screen.mouse_drag_panes = true;
+    // tab ids from 0, each with the terminal pane id + 1, the last tab is active
+    for tab_index in 0..number_of_tabs {
+        new_tab(&mut screen, tab_index as u32 + 1, tab_index);
+    }
+    (screen, plugin_receiver)
+}
+
+fn add_pane_to_active_tab(screen: &mut Screen, pane_id: PaneId) {
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .new_pane(
+            pane_id,
+            None,
+            None,
+            false,
+            false,
+            NewPanePlacement::default(),
+            Some(1),
+            None,
+        )
+        .unwrap();
+}
+
+fn position_in_pane(screen: &Screen, pane_id: PaneId, column_ratio: f64) -> Position {
+    let pane = screen
+        .get_active_tab(1)
+        .unwrap()
+        .get_pane_with_id(pane_id)
+        .unwrap();
+    Position::new(
+        (pane.y() + pane.rows() / 2) as i32,
+        (pane.x() as f64 + pane.cols() as f64 * column_ratio) as u16,
+    )
+}
+
+fn drag_and_release(screen: &mut Screen, position: Position) {
+    screen.handle_mouse_event(MouseEvent::new_left_motion_event(position), 1);
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(position), 1);
+}
+
+#[test]
+fn pane_dragged_from_another_tab_docks_beside_the_target_pane() {
+    let (mut screen, _plugin_receiver) = create_screen_for_mouse_drags(2);
+    // the pane of the first tab, while the second tab is active (eg. after hovering it)
+    screen.start_mouse_drag(
+        super::DraggedItem::Pane(PaneId::Terminal(1)),
+        Position::new(0, 5),
+        1,
+    );
+    let right_side_of_target = position_in_pane(&screen, PaneId::Terminal(2), 0.9);
+
+    drag_and_release(&mut screen, right_side_of_target);
+
+    let active_tab = screen.get_active_tab(1).unwrap();
+    assert!(
+        active_tab.has_pane_with_pid(&PaneId::Terminal(1)),
+        "The pane moved to the active tab"
+    );
+    let docked_pane = active_tab.get_pane_with_id(PaneId::Terminal(1)).unwrap();
+    let target_pane = active_tab.get_pane_with_id(PaneId::Terminal(2)).unwrap();
+    assert!(
+        docked_pane.x() > target_pane.x(),
+        "The pane is on the right of the target"
+    );
+    assert!(screen.mouse_drags.is_empty(), "The drag is over");
+}
+
+#[test]
+fn pane_dragged_onto_the_middle_of_another_pane_swaps_with_it() {
+    let (mut screen, _plugin_receiver) = create_screen_for_mouse_drags(1);
+    add_pane_to_active_tab(&mut screen, PaneId::Terminal(2));
+    let tab = screen.get_active_tab(1).unwrap();
+    let place_of = |pane_id| {
+        let pane = tab.get_pane_with_id(pane_id).unwrap();
+        (pane.x(), pane.y())
+    };
+    let (place_of_1, place_of_2) = (place_of(PaneId::Terminal(1)), place_of(PaneId::Terminal(2)));
+    screen.start_mouse_drag(
+        super::DraggedItem::Pane(PaneId::Terminal(1)),
+        Position::new(0, 5),
+        1,
+    );
+    let middle_of_target = position_in_pane(&screen, PaneId::Terminal(2), 0.5);
+
+    drag_and_release(&mut screen, middle_of_target);
+
+    let tab = screen.get_active_tab(1).unwrap();
+    let place_of = |pane_id| {
+        let pane = tab.get_pane_with_id(pane_id).unwrap();
+        (pane.x(), pane.y())
+    };
+    assert_eq!(place_of(PaneId::Terminal(1)), place_of_2);
+    assert_eq!(place_of(PaneId::Terminal(2)), place_of_1);
+}
+
+#[test]
+fn pane_dropped_on_an_unselectable_plugin_tells_the_plugin_where() {
+    let (mut screen, plugin_receiver) = create_screen_for_mouse_drags(1);
+    add_pane_to_active_tab(&mut screen, PaneId::Plugin(9));
+    // like the tab bar
+    screen
+        .get_active_tab_mut(1)
+        .unwrap()
+        .get_pane_with_id_mut(PaneId::Plugin(9))
+        .unwrap()
+        .set_selectable(false);
+    screen.start_mouse_drag(
+        super::DraggedItem::Pane(PaneId::Terminal(1)),
+        Position::new(0, 5),
+        1,
+    );
+    let inside_plugin = position_in_pane(&screen, PaneId::Plugin(9), 0.5);
+
+    screen.handle_mouse_event(MouseEvent::new_left_motion_event(inside_plugin), 1);
+    // the pane stays over the plugin long enough for it to switch tabs
+    screen.drag_hover_elapsed(1).unwrap();
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(inside_plugin), 1);
+
+    let mut pane_drag_hover = false;
+    let mut pane_dropped = false;
+    while let Ok((instruction, _)) = plugin_receiver.try_recv() {
+        match instruction {
+            PluginInstruction::PaneDragHover {
+                plugin_id, pane_id, ..
+            } => {
+                pane_drag_hover = plugin_id == 9 && pane_id == PaneId::Terminal(1);
+            },
+            PluginInstruction::PaneDropped {
+                plugin_id, pane_id, ..
+            } => {
+                pane_dropped = plugin_id == 9 && pane_id == PaneId::Terminal(1);
+            },
+            _ => {},
+        }
+    }
+    assert!(pane_drag_hover, "The plugin is told a pane is held over it");
+    assert!(pane_dropped, "The plugin is told a pane was dropped on it");
+}
+
+#[test]
+fn a_drag_whose_release_was_lost_is_cancelled() {
+    let (mut screen, _plugin_receiver) = create_screen_for_mouse_drags(1);
+    screen.start_mouse_drag(
+        super::DraggedItem::Pane(PaneId::Terminal(1)),
+        Position::new(0, 5),
+        1,
+    );
+    screen.handle_mouse_event(MouseEvent::new_left_motion_event(Position::new(5, 30)), 1);
+
+    // a new press without a release in between
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(5, 30)), 1);
+
+    assert!(screen.mouse_drags.is_empty());
+}
+
+#[test]
+fn a_drag_belongs_to_the_client_that_started_it() {
+    let (mut screen, _plugin_receiver) = create_screen_for_mouse_drags(1);
+    screen.add_client(2, false).expect("TEST");
+    screen.start_mouse_drag(
+        super::DraggedItem::Pane(PaneId::Terminal(1)),
+        Position::new(0, 5),
+        1,
+    );
+
+    screen.handle_mouse_event(MouseEvent::new_left_press_event(Position::new(5, 30)), 2);
+
+    assert!(
+        screen.mouse_drags.contains_key(&1),
+        "Another client's mouse does not end the drag"
+    );
+}
+
+#[test]
+fn clicking_a_tab_in_the_tab_bar_switches_to_it() {
+    let (mut screen, _plugin_receiver) = create_screen_for_mouse_drags(2);
+
+    // the click was already released when the tab bar asks to drag the tab
+    screen.start_tab_drag(0, 1).unwrap();
+
+    assert_eq!(screen.get_active_tab(1).unwrap().id, 0);
+    assert!(screen.mouse_drags.is_empty());
+}
+
+#[test]
+fn releasing_a_dragged_tab_without_moving_switches_to_it() {
+    let (mut screen, _plugin_receiver) = create_screen_for_mouse_drags(2);
+    let label = Position::new(0, 20);
+    screen.left_mouse_presses.insert(1, label);
+
+    screen.start_tab_drag(0, 1).unwrap();
+    screen.handle_mouse_event(MouseEvent::new_left_release_event(label), 1);
+
+    assert_eq!(screen.get_active_tab(1).unwrap().id, 0);
+}
+
+#[test]
+fn tab_dragged_onto_a_pane_brings_its_panes_along() {
+    let (mut screen, _plugin_receiver) = create_screen_for_mouse_drags(2);
+    screen.left_mouse_presses.insert(1, Position::new(0, 20));
+    screen.start_tab_drag(0, 1).unwrap();
+    let middle_of_target = position_in_pane(&screen, PaneId::Terminal(2), 0.5);
+
+    drag_and_release(&mut screen, middle_of_target);
+
+    let active_tab = screen.get_active_tab(1).unwrap();
+    assert!(active_tab.has_pane_with_pid(&PaneId::Terminal(1)));
+    assert!(active_tab.has_pane_with_pid(&PaneId::Terminal(2)));
+    assert!(
+        !screen
+            .tabs
+            .get(&0)
+            .unwrap()
+            .has_pane_with_pid(&PaneId::Terminal(1)),
+        "The dragged tab is left empty (it closes on the next render)"
+    );
+}
+
+#[test]
+fn move_tab_to_position_reorders_the_tabs() {
+    let (mut screen, _plugin_receiver) = create_screen_for_mouse_drags(3);
+
+    screen.move_tab_to_position(0, 2).unwrap();
+
+    let position_of = |tab_id| screen.tabs.get(&tab_id).unwrap().position;
+    assert_eq!(
+        (position_of(0), position_of(1), position_of(2)),
+        (2, 0, 1)
+    );
+}
+
 #[test]
 fn detaching_client_grows_vacated_tab_back() {
     let initial_size = Size {

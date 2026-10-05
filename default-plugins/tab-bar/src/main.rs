@@ -5,7 +5,7 @@ use std::cmp::{max, min};
 use std::collections::BTreeMap;
 use std::convert::TryInto;
 
-use tab::get_tab_to_focus;
+use tab::{get_clicked_line_part, get_tab_to_focus};
 use zellij_tile::prelude::*;
 
 use crate::line::tab_line;
@@ -46,6 +46,16 @@ static ARROW_SEPARATOR: &str = "";
 
 register_plugin!(State);
 
+impl State {
+    fn tab_id_at_column(&self, column: usize) -> Option<usize> {
+        let position = get_clicked_line_part(&self.tab_line, column)?.tab_index?;
+        self.tabs
+            .iter()
+            .find(|tab| tab.position == position)
+            .map(|tab| tab.tab_id)
+    }
+}
+
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         self.hide_swap_layout_indication = configuration
@@ -63,6 +73,8 @@ impl ZellijPlugin for State {
             EventType::Timer,
             EventType::InputReceived,
             EventType::PaneDropped,
+            EventType::PaneDragHover,
+            EventType::TabDropped,
         ]);
     }
 
@@ -147,9 +159,9 @@ impl ZellijPlugin for State {
                             return should_render;
                         }
                     }
-                    let tab_to_focus = get_tab_to_focus(&self.tab_line, self.active_tab_idx, col);
-                    if let Some(idx) = tab_to_focus {
-                        switch_tab_to(idx.try_into().unwrap());
+                    // the server switches to the tab on a click, or lets it be dragged elsewhere
+                    if let Some(tab_id) = self.tab_id_at_column(col) {
+                        start_tab_drag(tab_id);
                     }
                 },
                 Mouse::Hover(_, col) => {
@@ -192,7 +204,20 @@ impl ZellijPlugin for State {
                 }
                 // get_tab_to_focus counts tabs from 1, the plugin api from 0
                 if let Some(idx) = get_tab_to_focus(&self.tab_line, self.active_tab_idx, column) {
-                    break_panes_to_tab_with_index(&[pane_id], idx - 1, true);
+                    break_panes_to_tab_with_index(&[pane_id], idx.saturating_sub(1), true);
+                }
+            },
+            Event::PaneDragHover { column, .. } => {
+                // a pane held over a tab switches to it, so it can be dropped beside a pane there
+                if let Some(idx) = get_tab_to_focus(&self.tab_line, self.active_tab_idx, column) {
+                    switch_tab_to(idx.try_into().unwrap());
+                }
+            },
+            Event::TabDropped { tab_id, column, .. } => {
+                if let Some(position) =
+                    get_clicked_line_part(&self.tab_line, column).and_then(|part| part.tab_index)
+                {
+                    move_tab_to_position(tab_id, position);
                 }
             },
             _ => {

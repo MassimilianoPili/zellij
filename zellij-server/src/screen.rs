@@ -90,11 +90,11 @@ use crate::{
     panes::kitty_graphics::{KittyHostSupport, KittyImageStore},
     panes::sixel::SixelImageStore,
     panes::LinkHandler,
-    panes::PaneId,
+    panes::{DockSide, PaneId},
     plugins::{DumpSessionLayoutResponse, PluginId, PluginInstruction, PluginRenderAsset},
     pty::{get_default_shell, ClientTabIndexOrPaneId, PtyInstruction, VteBytes},
     pty_writer::PtyWriteInstruction,
-    tab::{GuestChoiceIndicator, SuppressedPanes, Tab},
+    tab::{DragFeedback, DropTarget, DropZone, GuestChoiceIndicator, SuppressedPanes, Tab},
     thread_bus::Bus,
     ui::loading_indication::LoadingIndication,
     ClientId, ServerInstruction,
@@ -108,6 +108,30 @@ use zellij_utils::{
 };
 
 use crate::mobile_web::MobileWebPrefs;
+
+/// What a client drags with the mouse (with the mouse_drag_panes option)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DraggedItem {
+    // a tiled pane, by its title row
+    Pane(PaneId),
+    // a tab (by its id), by its label in the tab bar
+    Tab(usize),
+}
+
+/// A drag lives in the screen rather than in a tab, because it can go on in another tab: a
+/// pane held over a tab in the tab bar switches to that tab
+#[derive(Debug, Clone, Copy)]
+struct MouseDrag {
+    dragged: DraggedItem,
+    start_position: Position,
+    has_moved: bool,
+    // the tab, the plugin (eg. the tab bar) under the mouse and the position in that plugin
+    hovered_plugin: Option<(usize, PaneId, Position)>,
+    // the tab showing the drag feedback, which is the active tab at the last motion
+    feedback_tab_id: Option<usize>,
+}
+
+const DRAGGED_PANE_TEXT: &str = "MOVING";
 
 /// Parses a namespaced OSC 99 response and extracts the original pane ID
 /// and un-namespaced response bytes.
@@ -909,6 +933,10 @@ pub enum ScreenInstruction {
     SetFollowedClient(ClientId),
     WatcherTerminalResize(ClientId, Size),
     ClearMouseHelpText(ClientId),
+    // a pane dragged with the mouse stayed still over the tab bar
+    DragHoverElapsed(ClientId),
+    StartTabDrag(usize, ClientId),    // usize - tab id
+    MoveTabToPosition(usize, usize), // tab id, position
     UpdateAvailableLayouts(Vec<LayoutInfo>, Vec<LayoutWithError>),
     SetPluginRegexHighlights {
         pane_id: PaneId,
@@ -1285,6 +1313,9 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::SetFollowedClient(..) => ScreenContext::SetFollowedClient,
             ScreenInstruction::WatcherTerminalResize(..) => ScreenContext::WatcherTerminalResize,
             ScreenInstruction::ClearMouseHelpText(..) => ScreenContext::ClearMouseHelpText,
+            ScreenInstruction::DragHoverElapsed(..) => ScreenContext::DragHoverElapsed,
+            ScreenInstruction::StartTabDrag(..) => ScreenContext::StartTabDrag,
+            ScreenInstruction::MoveTabToPosition(..) => ScreenContext::MoveTabToPosition,
             ScreenInstruction::UpdateAvailableLayouts(..) => ScreenContext::UpdateAvailableLayouts,
             ScreenInstruction::SetPluginRegexHighlights { .. } => {
                 ScreenContext::SetPluginRegexHighlights
@@ -1587,6 +1618,9 @@ pub(crate) struct Screen {
     focus_follows_mouse: bool,
     mouse_click_through: bool,
     mouse_drag_panes: bool,
+    mouse_drags: HashMap<ClientId, MouseDrag>,
+    // a left button press until its release, to tell a drag of a tab from a click on it
+    left_mouse_presses: HashMap<ClientId, Position>,
     currently_marking_pane_group: Rc<RefCell<HashMap<ClientId, bool>>>,
     // the below are the configured values - the ones that will be set if and when the web server
     // is brought online
@@ -1798,6 +1832,8 @@ impl Screen {
             focus_follows_mouse,
             mouse_click_through,
             mouse_drag_panes: false,
+            mouse_drags: HashMap::new(),
+            left_mouse_presses: HashMap::new(),
             web_server_ip,
             web_server_port,
             render_blocker: RenderBlocker::new(100),
@@ -5110,6 +5146,8 @@ impl Screen {
     pub fn remove_client(&mut self, client_id: ClientId) -> Result<()> {
         let err_context = || format!("failed to remove client {client_id}");
 
+        self.end_mouse_drag(client_id);
+        self.left_mouse_presses.remove(&client_id);
         self.set_client_dimmed(client_id, false, None);
         let passthrough_panes: Vec<PaneId> = self
             .nested_guest_choices
@@ -7266,6 +7304,15 @@ impl Screen {
         }
     }
     pub fn handle_mouse_event(&mut self, event: MouseEvent, client_id: ClientId) {
+        if event.left && event.event_type == MouseEventType::Press {
+            self.left_mouse_presses.insert(client_id, event.position);
+        } else if event.event_type == MouseEventType::Release {
+            self.left_mouse_presses.remove(&client_id);
+        }
+        if self.mouse_drags.contains_key(&client_id) {
+            self.handle_mouse_drag_event(event, client_id).non_fatal();
+            return;
+        }
         let is_bare_motion = event.event_type == MouseEventType::Motion
             && !event.left
             && !event.right
@@ -7284,6 +7331,9 @@ impl Screen {
         }) {
             Ok(mouse_effect) => {
                 let mut should_render = false;
+                if let Some(pane_id) = mouse_effect.start_pane_drag {
+                    self.start_mouse_drag(DraggedItem::Pane(pane_id), event.position, client_id);
+                }
                 if let Some(pane_id) = mouse_effect.group_toggle {
                     if self.advanced_mouse_actions {
                         self.toggle_pane_id_in_group(pane_id, &client_id);
@@ -7350,6 +7400,480 @@ impl Screen {
                 log::error!("Failed to process MouseEvent: {}", e);
             },
         }
+    }
+    fn start_mouse_drag(
+        &mut self,
+        dragged: DraggedItem,
+        start_position: Position,
+        client_id: ClientId,
+    ) {
+        self.mouse_drags.insert(
+            client_id,
+            MouseDrag {
+                dragged,
+                start_position,
+                has_moved: false,
+                hovered_plugin: None,
+                feedback_tab_id: None,
+            },
+        );
+    }
+    fn handle_mouse_drag_event(&mut self, event: MouseEvent, client_id: ClientId) -> Result<()> {
+        match event.event_type {
+            MouseEventType::Motion if event.left => {
+                self.continue_mouse_drag(event.position, client_id)
+            },
+            MouseEventType::Release => self.drop_mouse_drag(event.position, client_id),
+            // anything else means the release was lost (eg. it happened outside of the host
+            // terminal window), so the drag is cancelled rather than left stuck
+            _ => self.cancel_mouse_drag(client_id),
+        }
+    }
+    fn continue_mouse_drag(&mut self, position: Position, client_id: ClientId) -> Result<()> {
+        let err_context = || format!("failed to continue mouse drag for client {client_id}");
+        let Some(mut drag) = self.mouse_drags.get(&client_id).copied() else {
+            return Ok(());
+        };
+        if !drag.has_moved {
+            if position == drag.start_position {
+                return Ok(());
+            }
+            drag.has_moved = true;
+            if let DraggedItem::Pane(pane_id) = drag.dragged {
+                self.set_dragged_pane_highlight(pane_id, true);
+            }
+        }
+        let active_tab_id = self.get_active_tab(client_id).with_context(err_context)?.id;
+        // the feedback follows the active tab, which changes when the drag switches tabs
+        if let Some(previous_tab) = drag
+            .feedback_tab_id
+            .filter(|tab_id| *tab_id != active_tab_id)
+            .and_then(|tab_id| self.tabs.get_mut(&tab_id))
+        {
+            previous_tab.clear_drag_feedback(client_id);
+        }
+        let dragged_pane_id = match drag.dragged {
+            DraggedItem::Pane(pane_id) => Some(pane_id),
+            DraggedItem::Tab(_) => None,
+        };
+        let active_tab = self.get_active_tab_mut(client_id).with_context(err_context)?;
+        let drop_target = active_tab.drop_target_at(&position);
+        let hovered_plugin = match drop_target {
+            Some(DropTarget::Plugin {
+                pane_id,
+                relative_position,
+            }) => Some((active_tab_id, pane_id, relative_position)),
+            _ => None,
+        };
+        let pane_drop_target = match drop_target {
+            Some(DropTarget::Pane { pane_id, zone }) if Some(pane_id) != dragged_pane_id => {
+                Some((pane_id, zone))
+            },
+            _ => None,
+        };
+        active_tab.set_drag_feedback(
+            client_id,
+            DragFeedback {
+                dragging_tab: dragged_pane_id.is_none(),
+                drop_target: pane_drop_target,
+            },
+        );
+        if let Some((_, plugin_pane_id, relative_position)) = hovered_plugin {
+            active_tab.send_drag_hover_to_plugin(plugin_pane_id, relative_position, client_id);
+        }
+        let hovered_plugin_changed = drag.hovered_plugin.map(|(tab_id, pane_id, _)| (tab_id, pane_id))
+            != hovered_plugin.map(|(tab_id, pane_id, _)| (tab_id, pane_id));
+        if hovered_plugin_changed {
+            // tells the plugin the mouse left it
+            if let Some((tab_id, plugin_pane_id, _)) = drag.hovered_plugin {
+                if let Some(tab) = self.tabs.get(&tab_id) {
+                    tab.clear_drag_hover_on_plugin(plugin_pane_id, client_id);
+                }
+            }
+        }
+        // a pane held still over a tab in the tab bar switches to that tab, so that it can then be
+        // dropped beside a pane there
+        if dragged_pane_id.is_some() && hovered_plugin.is_some() && hovered_plugin != drag.hovered_plugin
+        {
+            self.bus
+                .senders
+                .send_to_background_jobs(BackgroundJob::DragHoverTab { client_id })
+                .with_context(err_context)?;
+        }
+        drag.hovered_plugin = hovered_plugin;
+        drag.feedback_tab_id = Some(active_tab_id);
+        self.mouse_drags.insert(client_id, drag);
+        self.render(None).with_context(err_context)
+    }
+    fn drop_mouse_drag(&mut self, position: Position, client_id: ClientId) -> Result<()> {
+        let err_context = || format!("failed to drop mouse drag for client {client_id}");
+        let Some(drag) = self.end_mouse_drag(client_id) else {
+            return Ok(());
+        };
+        let active_tab_id = self.get_active_tab(client_id).with_context(err_context)?.id;
+        match (drag.dragged, drag.has_moved) {
+            (DraggedItem::Pane(pane_id), false) => {
+                // pressing and releasing the title of a pane without moving is a click on it
+                let active_tab = self.get_active_tab_mut(client_id).with_context(err_context)?;
+                if active_tab.get_active_pane_id(client_id) != Some(pane_id) {
+                    active_tab
+                        .focus_pane_at_mouse_position(&position, client_id)
+                        .with_context(err_context)?;
+                }
+            },
+            (DraggedItem::Tab(tab_id), false) => {
+                // and pressing and releasing a tab in the tab bar is a click on it
+                self.switch_to_tab_with_id(tab_id, client_id)
+                    .with_context(err_context)?;
+            },
+            (DraggedItem::Pane(pane_id), true) => {
+                let drop_target = self
+                    .get_active_tab_mut(client_id)
+                    .with_context(err_context)?
+                    .drop_target_at(&position);
+                self.drop_pane(pane_id, drop_target, active_tab_id, client_id)
+                    .with_context(err_context)?;
+            },
+            (DraggedItem::Tab(tab_id), true) => {
+                let drop_target = self
+                    .get_active_tab_mut(client_id)
+                    .with_context(err_context)?
+                    .drop_target_at(&position);
+                self.drop_tab(tab_id, drop_target, active_tab_id, client_id)
+                    .with_context(err_context)?;
+            },
+        }
+        self.log_and_report_session_state()
+            .with_context(err_context)?;
+        self.render(None).with_context(err_context)
+    }
+    fn cancel_mouse_drag(&mut self, client_id: ClientId) -> Result<()> {
+        if self.end_mouse_drag(client_id).is_some() {
+            self.render(None)?;
+        }
+        Ok(())
+    }
+    /// Removes the drag of this client and everything it shows
+    fn end_mouse_drag(&mut self, client_id: ClientId) -> Option<MouseDrag> {
+        let drag = self.mouse_drags.remove(&client_id)?;
+        if let (DraggedItem::Pane(pane_id), true) = (drag.dragged, drag.has_moved) {
+            self.set_dragged_pane_highlight(pane_id, false);
+        }
+        if let Some(tab) = drag
+            .feedback_tab_id
+            .and_then(|tab_id| self.tabs.get_mut(&tab_id))
+        {
+            tab.clear_drag_feedback(client_id);
+        }
+        if let Some((tab_id, plugin_pane_id, _)) = drag.hovered_plugin {
+            if let Some(tab) = self.tabs.get(&tab_id) {
+                tab.clear_drag_hover_on_plugin(plugin_pane_id, client_id);
+            }
+        }
+        Some(drag)
+    }
+    fn set_dragged_pane_highlight(&mut self, pane_id: PaneId, highlighted: bool) {
+        if let Some(tab) = self
+            .tabs
+            .values_mut()
+            .find(|tab| tab.has_pane_with_pid(&pane_id))
+        {
+            if highlighted {
+                tab.add_highlight_pane_frame_color_override(
+                    pane_id,
+                    Some(DRAGGED_PANE_TEXT.to_owned()),
+                    None,
+                );
+            } else {
+                tab.clear_pane_frame_color_override(pane_id, None);
+            }
+            tab.set_force_render();
+        }
+    }
+    fn drop_pane(
+        &mut self,
+        pane_id: PaneId,
+        drop_target: Option<DropTarget>,
+        active_tab_id: usize,
+        client_id: ClientId,
+    ) -> Result<()> {
+        let pane_is_in_active_tab = self
+            .tabs
+            .get(&active_tab_id)
+            .map(|tab| tab.has_pane_with_pid(&pane_id))
+            .unwrap_or(false);
+        match drop_target {
+            // only the plugin (eg. the tab bar) knows what it draws where, so it decides what
+            // dropping the pane on it means
+            Some(DropTarget::Plugin {
+                pane_id: PaneId::Plugin(plugin_id),
+                relative_position,
+            }) => {
+                self.bus
+                    .senders
+                    .send_to_plugin(PluginInstruction::PaneDropped {
+                        plugin_id,
+                        client_id,
+                        pane_id,
+                        line: relative_position.line(),
+                        column: relative_position.column(),
+                    })?;
+            },
+            Some(DropTarget::Pane {
+                pane_id: target_pane_id,
+                zone,
+            }) if target_pane_id != pane_id => match (pane_is_in_active_tab, zone.dock_side()) {
+                (true, None) => {
+                    self.get_active_tab_mut(client_id)?
+                        .swap_tiled_panes(pane_id, target_pane_id, client_id);
+                },
+                (true, Some(side)) => {
+                    self.get_active_tab_mut(client_id)?
+                        .dock_pane(pane_id, target_pane_id, side, client_id)?;
+                },
+                // a pane from another tab dropped in the middle of a pane joins this tab where
+                // its layout puts it
+                (false, None) => {
+                    if self.pane_can_leave_its_tab(pane_id) {
+                        self.break_multiple_panes_to_tab_with_id(
+                            vec![pane_id],
+                            active_tab_id,
+                            false,
+                            client_id,
+                        )?;
+                    }
+                },
+                (false, Some(side)) => {
+                    if self.pane_can_leave_its_tab(pane_id) {
+                        self.dock_pane_from_another_tab(
+                            pane_id,
+                            target_pane_id,
+                            side,
+                            active_tab_id,
+                            client_id,
+                        )?;
+                    }
+                },
+            },
+            _ => {},
+        }
+        Ok(())
+    }
+    /// A tab closes once it has no tiled panes left, and its floating panes close with it, so its
+    /// last tiled pane does not leave a tab that has floating panes
+    fn pane_can_leave_its_tab(&self, pane_id: PaneId) -> bool {
+        self.tabs
+            .values()
+            .find(|tab| tab.has_pane_with_pid(&pane_id))
+            .map(|tab| !tab.is_last_tiled_pane_of_tab_with_floating_panes(pane_id))
+            .unwrap_or(false)
+    }
+    fn dock_pane_from_another_tab(
+        &mut self,
+        pane_id: PaneId,
+        target_pane_id: PaneId,
+        side: DockSide,
+        target_tab_id: usize,
+        client_id: ClientId,
+    ) -> Result<()> {
+        let Some(source_tab_id) = self
+            .tabs
+            .iter()
+            .find(|(tab_id, tab)| **tab_id != target_tab_id && tab.has_pane_with_pid(&pane_id))
+            .map(|(tab_id, _)| *tab_id)
+        else {
+            return Ok(());
+        };
+        let Some(target_tab) = self.tabs.get_mut(&target_tab_id) else {
+            return Ok(());
+        };
+        // the target is checked before the pane leaves its tab, so that the pane has somewhere
+        // to go
+        if !target_tab.can_dock_pane_beside(target_pane_id, side) {
+            return Ok(());
+        }
+        let keep_swap_layout = target_tab.keeps_swap_layout_when_docking();
+        target_tab.set_tiled_panes_damaged();
+        let Some(pane) = self
+            .tabs
+            .get_mut(&source_tab_id)
+            .and_then(|source_tab| source_tab.extract_pane(pane_id, false))
+        else {
+            return Ok(());
+        };
+        if let Some(target_tab) = self.tabs.get_mut(&target_tab_id) {
+            target_tab.insert_docked_pane(pane, target_pane_id, side, keep_swap_layout, client_id)?;
+        }
+        Ok(())
+    }
+    fn drop_tab(
+        &mut self,
+        tab_id: usize,
+        drop_target: Option<DropTarget>,
+        active_tab_id: usize,
+        client_id: ClientId,
+    ) -> Result<()> {
+        match drop_target {
+            // a tab dropped on another tab in the tab bar moves there, which the tab bar decides
+            // since only it knows where each tab is
+            Some(DropTarget::Plugin {
+                pane_id: PaneId::Plugin(plugin_id),
+                relative_position,
+            }) => {
+                self.bus
+                    .senders
+                    .send_to_plugin(PluginInstruction::TabDropped {
+                        plugin_id,
+                        client_id,
+                        tab_id,
+                        line: relative_position.line(),
+                        column: relative_position.column(),
+                    })?;
+            },
+            Some(DropTarget::Pane {
+                pane_id: target_pane_id,
+                zone,
+            }) if tab_id != active_tab_id => {
+                self.merge_tab_into_tab(tab_id, active_tab_id, target_pane_id, zone, client_id)?;
+            },
+            _ => {},
+        }
+        Ok(())
+    }
+    /// Moves the panes of a tab into another tab, eg. when the tab is dragged with the mouse onto
+    /// a pane of the other tab: the first tiled pane goes in the drop zone, the others where the
+    /// layout of the target tab puts them. The emptied tab closes on the next render.
+    fn merge_tab_into_tab(
+        &mut self,
+        source_tab_id: usize,
+        target_tab_id: usize,
+        target_pane_id: PaneId,
+        zone: DropZone,
+        client_id: ClientId,
+    ) -> Result<()> {
+        let Some((tiled_pane_ids, floating_pane_ids)) = self
+            .tabs
+            .get(&source_tab_id)
+            .map(|tab| tab.pane_ids_to_merge())
+        else {
+            return Ok(());
+        };
+        let mut tiled_pane_ids = tiled_pane_ids.into_iter();
+        let first_pane_id = tiled_pane_ids.next();
+        let mut pane_ids_to_move: Vec<PaneId> = tiled_pane_ids.collect();
+        pane_ids_to_move.extend(floating_pane_ids);
+        let pane_id_to_dock = match (first_pane_id, zone.dock_side()) {
+            (Some(first_pane_id), Some(side)) => Some((first_pane_id, side)),
+            (Some(first_pane_id), None) => {
+                pane_ids_to_move.insert(0, first_pane_id);
+                None
+            },
+            (None, _) => None,
+        };
+        // the other panes move first, so that the docked pane is the last to leave its tab
+        if !pane_ids_to_move.is_empty() {
+            self.break_multiple_panes_to_tab_with_id(
+                pane_ids_to_move,
+                target_tab_id,
+                false,
+                client_id,
+            )?;
+        }
+        if let Some((pane_id, side)) = pane_id_to_dock {
+            self.dock_pane_from_another_tab(pane_id, target_pane_id, side, target_tab_id, client_id)?;
+            // without room beside the target, the pane joins the tab where its layout puts it
+            if self
+                .tabs
+                .get(&source_tab_id)
+                .map(|tab| tab.has_pane_with_pid(&pane_id))
+                .unwrap_or(false)
+            {
+                self.break_multiple_panes_to_tab_with_id(
+                    vec![pane_id],
+                    target_tab_id,
+                    false,
+                    client_id,
+                )?;
+            }
+        }
+        Ok(())
+    }
+    /// A plugin (eg. the tab bar) asks to start dragging one of its tabs, on a left click on it
+    pub fn start_tab_drag(&mut self, tab_id: usize, client_id: ClientId) -> Result<()> {
+        match self.left_mouse_presses.get(&client_id).copied() {
+            // the button is still down, so this can become a drag; releasing it without moving
+            // is still a click
+            Some(press_position)
+                if self.mouse_drag_panes && !self.mouse_drags.contains_key(&client_id) =>
+            {
+                self.start_mouse_drag(DraggedItem::Tab(tab_id), press_position, client_id);
+                Ok(())
+            },
+            // the button was already released (or dragging is off): a plain click on the tab
+            _ => self.switch_to_tab_with_id(tab_id, client_id),
+        }
+    }
+    /// The pane being dragged stayed still over the tab bar, so the tab bar is told where it is
+    /// and switches to the tab under it
+    pub fn drag_hover_elapsed(&mut self, client_id: ClientId) -> Result<()> {
+        let Some(drag) = self.mouse_drags.get(&client_id).copied() else {
+            return Ok(());
+        };
+        let (
+            DraggedItem::Pane(pane_id),
+            Some((tab_id, PaneId::Plugin(plugin_id), relative_position)),
+        ) = (drag.dragged, drag.hovered_plugin)
+        else {
+            return Ok(());
+        };
+        if self.get_active_tab(client_id).map(|tab| tab.id).ok() != Some(tab_id) {
+            return Ok(());
+        }
+        self.bus
+            .senders
+            .send_to_plugin(PluginInstruction::PaneDragHover {
+                plugin_id,
+                client_id,
+                pane_id,
+                line: relative_position.line(),
+                column: relative_position.column(),
+            })
+    }
+    pub fn switch_to_tab_with_id(&mut self, tab_id: usize, client_id: ClientId) -> Result<()> {
+        if let Some(tab_position) = self.get_tab_position_by_id(tab_id) {
+            // switch_active_tab expects 0-based position
+            self.switch_active_tab(tab_position, None, true, client_id)?;
+            self.render(None)?;
+
+            self.tab_history
+                .entry(client_id)
+                .or_insert_with(Vec::new)
+                .push(tab_id);
+        } else {
+            log::error!("Tab with ID {} not found", tab_id);
+        }
+        Ok(())
+    }
+    /// Moves a tab to a position in the tab bar, eg. when it is dragged with the mouse onto
+    /// another tab
+    pub fn move_tab_to_position(&mut self, tab_id: usize, position: usize) -> Result<()> {
+        let position = position.min(self.tabs.len().saturating_sub(1));
+        // each step swaps the tab with its neighbour, so this never wraps around
+        for _ in 0..self.tabs.len() {
+            let Some(current_position) = self.get_tab_position_by_id(tab_id) else {
+                break;
+            };
+            if current_position == position {
+                break;
+            }
+            let direction = if current_position < position {
+                Direction::Right
+            } else {
+                Direction::Left
+            };
+            self.move_tab_by_id(tab_id, direction)?;
+        }
+        self.render(None)
     }
     pub fn toggle_pane_in_group(&mut self, client_id: ClientId) -> Result<()> {
         let err_context = "Can't add pane to group";
@@ -11270,20 +11794,7 @@ pub(crate) fn screen_thread_main(
                     .or_else(|| screen.active_tab_ids.keys().next().copied());
 
                 if let Some(client_id) = client_id_to_switch {
-                    // Get the position from the ID
-                    if let Some(tab_position) = screen.get_tab_position_by_id(tab_id) {
-                        // switch_active_tab expects 0-based position
-                        screen.switch_active_tab(tab_position, None, true, client_id)?;
-                        screen.render(None)?;
-
-                        screen
-                            .tab_history
-                            .entry(client_id)
-                            .or_insert_with(Vec::new)
-                            .push(tab_id);
-                    } else {
-                        log::error!("Tab with ID {} not found", tab_id);
-                    }
+                    screen.switch_to_tab_with_id(tab_id, client_id)?;
                 }
             },
             ScreenInstruction::RenameTabWithId(tab_id, new_name, _completion_tx) => {
@@ -12212,6 +12723,15 @@ pub(crate) fn screen_thread_main(
                     tab.clear_mouse_help_text(client_id);
                     screen.render(None)?;
                 }
+            },
+            ScreenInstruction::DragHoverElapsed(client_id) => {
+                screen.drag_hover_elapsed(client_id).non_fatal();
+            },
+            ScreenInstruction::StartTabDrag(tab_id, client_id) => {
+                screen.start_tab_drag(tab_id, client_id).non_fatal();
+            },
+            ScreenInstruction::MoveTabToPosition(tab_id, position) => {
+                screen.move_tab_to_position(tab_id, position).non_fatal();
             },
             ScreenInstruction::SetPluginRegexHighlights {
                 pane_id,

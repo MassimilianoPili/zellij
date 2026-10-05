@@ -58,6 +58,7 @@ pub use super::generated_api::api::{
         GetSessionListPayload as ProtobufGetSessionListPayload,
         GetSessionListResponse as ProtobufGetSessionListResponse, GetTabInfoPayload,
         GetTabInfoResponse as ProtobufGetTabInfoResponse, GoToTabWithIdPayload,
+        MoveTabToPositionPayload, StartTabDragPayload,
         GroupAndUngroupPanesPayload, HideFloatingPanesPayload as ProtobufHideFloatingPanesPayload,
         HideFloatingPanesResponse as ProtobufHideFloatingPanesResponse, HidePaneWithIdPayload,
         HighlightAndUnhighlightPanesPayload, HighlightLayer as ProtobufHighlightLayer,
@@ -1106,6 +1107,18 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                     return Err("FocusHostSession should not have a payload");
                 }
                 Ok(PluginCommand::FocusHostSession)
+            },
+            Some(CommandName::StartTabDrag) => match protobuf_plugin_command.payload {
+                Some(Payload::StartTabDragPayload(payload)) => {
+                    Ok(PluginCommand::StartTabDrag(payload.tab_id))
+                },
+                _ => Err("Mismatched payload for StartTabDrag"),
+            },
+            Some(CommandName::MoveTabToPosition) => match protobuf_plugin_command.payload {
+                Some(Payload::MoveTabToPositionPayload(payload)) => Ok(
+                    PluginCommand::MoveTabToPosition(payload.tab_id, payload.position),
+                ),
+                _ => Err("Mismatched payload for MoveTabToPosition"),
             },
             Some(CommandName::TogglePaneFrames) => {
                 if protobuf_plugin_command.payload.is_some() {
@@ -3105,6 +3118,16 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
             PluginCommand::FocusHostSession => Ok(ProtobufPluginCommand {
                 name: CommandName::FocusHostSession as i32,
                 payload: None,
+            }),
+            PluginCommand::StartTabDrag(tab_id) => Ok(ProtobufPluginCommand {
+                name: CommandName::StartTabDrag as i32,
+                payload: Some(Payload::StartTabDragPayload(StartTabDragPayload { tab_id })),
+            }),
+            PluginCommand::MoveTabToPosition(tab_id, position) => Ok(ProtobufPluginCommand {
+                name: CommandName::MoveTabToPosition as i32,
+                payload: Some(Payload::MoveTabToPositionPayload(
+                    MoveTabToPositionPayload { tab_id, position },
+                )),
             }),
             PluginCommand::TogglePaneFrames => Ok(ProtobufPluginCommand {
                 name: CommandName::TogglePaneFrames as i32,

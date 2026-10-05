@@ -9,7 +9,15 @@ mod swap_layouts;
 
 use crate::plugins::PluginId;
 use copy_command::CopyCommand;
-pub use mouse_handler::{MouseEffect, MouseHandler, PaneDragState, PaneEdge, PaneResizeState};
+pub use mouse_handler::{DropTarget, DropZone, MouseEffect, MouseHandler, PaneEdge, PaneResizeState};
+
+/// What a client dragging a pane or a tab with the mouse sees in this tab
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DragFeedback {
+    pub dragging_tab: bool,
+    // the pane under the mouse and where the dragged pane would go if dropped there
+    pub drop_target: Option<(PaneId, DropZone)>,
+}
 use std::env::temp_dir;
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -32,8 +40,10 @@ use crate::background_jobs::BackgroundJob;
 use crate::pane_groups::PaneGroups;
 use crate::pty_writer::PtyWriteInstruction;
 use crate::screen::{CopyOptions, GuestModalOutcome, ScreenInstruction};
+use crate::ui::drop_zone_overlay::drop_zone_overlay_chunks;
 use crate::ui::hint_text::{
-    held_hint_variants, hover_hint_variants, resize_hint_variants, HintExitStatus,
+    held_hint_variants, hover_hint_variants, pane_drop_hint_variants, resize_hint_variants,
+    tab_drop_hint_variants, title_drag_hint_variants, HintExitStatus,
 };
 use crate::ui::{
     loading_indication::LoadingIndication, pane_boundaries_frame::FrameParams,
@@ -52,7 +62,7 @@ use crate::{
     panes::kitty_graphics::{KittyHostSupport, KittyImageStore},
     panes::nested_session_modal::GuestModalShortcuts,
     panes::sixel::SixelImageStore,
-    panes::{FloatingPanes, TiledPanes},
+    panes::{DockSide, FloatingPanes, TiledPanes},
     panes::{LinkHandler, PaneId, PluginPane, TerminalPane, EMPTY_TERMINAL_CHARACTER},
     plugins::PluginInstruction,
     pty::{ClientTabIndexOrPaneId, PtyInstruction, VteBytes},
@@ -221,7 +231,8 @@ pub(crate) struct Tab {
     pending_vte_events: HashMap<u32, Vec<VteBytes>>,
     pub selecting_with_mouse_in_pane: Option<PaneId>, // this is only pub for the tests
     pane_being_resized_with_mouse: Option<PaneResizeState>,
-    pane_being_dragged_with_mouse: Option<PaneDragState>,
+    mouse_hover_title_row: HashMap<ClientId, PaneId>,
+    drag_feedback: HashMap<ClientId, DragFeedback>,
     link_handler: Rc<RefCell<LinkHandler>>,
     clipboard_provider: ClipboardProvider,
     // TODO: used only to focus the pane when the layout is loaded
@@ -990,7 +1001,8 @@ impl Tab {
             connected_clients,
             selecting_with_mouse_in_pane: None,
             pane_being_resized_with_mouse: None,
-            pane_being_dragged_with_mouse: None,
+            mouse_hover_title_row: HashMap::new(),
+            drag_feedback: HashMap::new(),
             link_handler: Rc::new(RefCell::new(LinkHandler::new())),
             clipboard_provider,
             focus_pane_id: None,
@@ -2095,6 +2107,18 @@ impl Tab {
     fn resolve_hint_text(&self, client_id: ClientId) -> BTreeMap<usize, StyledText> {
         let focused_pane_id = self.get_active_pane_id(client_id);
         let hovered_pane_id = self.mouse_hover_pane_id.get(&client_id).copied();
+        if self.mouse_hover_tips && self.mouse_drag_panes {
+            if let Some(drag_feedback) = self.drag_feedback.get(&client_id) {
+                return if drag_feedback.dragging_tab {
+                    tab_drop_hint_variants()
+                } else {
+                    pane_drop_hint_variants()
+                };
+            }
+            if self.mouse_hover_title_row.contains_key(&client_id) {
+                return title_drag_hint_variants();
+            }
+        }
         if self.mouse_hover_tips {
             if let Some(hovered_pane_id) = hovered_pane_id {
                 if Some(hovered_pane_id) != focused_pane_id {
@@ -2293,6 +2317,8 @@ impl Tab {
         self.mouse_help_text_visible.remove(&client_id);
         self.mouse_last_pane_id.remove(&client_id);
         self.last_mouse_activity_time.remove(&client_id);
+        self.mouse_hover_title_row.remove(&client_id);
+        self.drag_feedback.remove(&client_id);
         self.set_client_dimmed(client_id, false);
         self.set_force_render();
     }
@@ -4902,6 +4928,8 @@ impl Tab {
                 )
                 .with_context(err_context)?;
         }
+        self.render_drag_feedback(output)
+            .with_context(err_context)?;
 
         self.render_cursor(output);
         if output.has_rendered_assets() {
@@ -7627,6 +7655,238 @@ impl Tab {
     }
     pub fn update_mouse_drag_panes(&mut self, mouse_drag_panes: bool) {
         self.mouse_drag_panes = mouse_drag_panes;
+    }
+    /// Swaps two tiled panes of this tab, eg. when one is dragged with the mouse onto the other.
+    /// This keeps the current swap layout.
+    pub fn swap_tiled_panes(
+        &mut self,
+        dragged_pane_id: PaneId,
+        target_pane_id: PaneId,
+        client_id: ClientId,
+    ) {
+        if dragged_pane_id == target_pane_id
+            || self.tiled_panes.fullscreen_is_active()
+            || !self.tiled_panes.panes_contain(&dragged_pane_id)
+            || !self.tiled_panes.panes_contain(&target_pane_id)
+        {
+            return;
+        }
+        self.dissolve_stack_lists_for_classic_mutation();
+        self.tiled_panes.swap_panes(dragged_pane_id, target_pane_id);
+        self.tiled_panes.focus_pane(dragged_pane_id, client_id);
+        self.set_force_render();
+    }
+    /// Docks a tiled pane of this tab beside another one, eg. when it is dragged with the mouse
+    /// onto the edge of the other pane
+    pub fn dock_pane(
+        &mut self,
+        pane_id: PaneId,
+        target_pane_id: PaneId,
+        side: DockSide,
+        client_id: ClientId,
+    ) -> Result<()> {
+        let err_context = || format!("failed to dock pane {pane_id:?} beside {target_pane_id:?}");
+        if pane_id == target_pane_id
+            || self.floating_panes.panes_are_visible()
+            || !self.tiled_panes.panes_contain(&pane_id)
+            || !self.tiled_panes.panes_contain(&target_pane_id)
+        {
+            return Ok(());
+        }
+        let keep_swap_layout = self.keeps_swap_layout_when_docking();
+        if self.tiled_panes.fullscreen_is_active() {
+            self.tiled_panes.unset_fullscreen();
+        }
+        self.dissolve_stack_lists_for_classic_mutation();
+        // marking the layout as damaged before extracting the pane keeps the extraction from
+        // re-tiling this tab, which could move the target pane before we split it
+        self.swap_layouts.set_is_tiled_damaged();
+        match self.extract_pane(pane_id, false) {
+            Some(pane) => self
+                .insert_docked_pane(pane, target_pane_id, side, keep_swap_layout, client_id)
+                .with_context(err_context),
+            None => Ok(()),
+        }
+    }
+    /// Places a pane (from this tab or from another one) beside a tiled pane of this tab. If
+    /// there is no room beside the target, the pane is placed wherever there is room.
+    ///
+    /// With keep_swap_layout, a left or right dock in a tab whose panes are a single row re-applies
+    /// the current swap layout with the panes in their new order (eg. equal columns), instead of
+    /// leaving the tab with a manual layout.
+    pub fn insert_docked_pane(
+        &mut self,
+        mut pane: Box<dyn Pane>,
+        target_pane_id: PaneId,
+        side: DockSide,
+        keep_swap_layout: bool,
+        client_id: ClientId,
+    ) -> Result<()> {
+        let err_context = || format!("failed to dock pane beside {target_pane_id:?}");
+        let pane_id = pane.pid();
+        if self.tiled_panes.fullscreen_is_active() {
+            self.tiled_panes.unset_fullscreen();
+        }
+        self.dissolve_stack_lists_for_classic_mutation();
+        pane.set_active_at(Instant::now());
+        self.swap_layouts.set_is_tiled_damaged();
+        let docked = if self.tiled_panes.panes_contain(&target_pane_id)
+            && self.tiled_panes.can_dock_pane_beside(target_pane_id, side)
+        {
+            self.tiled_panes
+                .dock_pane_beside(pane, target_pane_id, side)
+        } else {
+            Err(pane)
+        };
+        if let Err(pane) = docked {
+            self.tiled_panes.insert_pane(pane_id, pane, Some(client_id));
+        }
+        self.tiled_panes.focus_pane(pane_id, client_id);
+        self.clear_pane_frame_color_override(pane_id, None);
+        let docked_in_a_row = matches!(side, DockSide::Left | DockSide::Right)
+            && self.tiled_panes_are_a_single_row();
+        if keep_swap_layout && self.auto_layout && docked_in_a_row {
+            self.order_tiled_panes_by_column();
+            // the layout is marked as damaged, so this re-applies the current swap layout instead
+            // of moving to the next one
+            self.relayout_tiled_panes(false).with_context(err_context)?;
+        }
+        self.set_should_clear_display_before_rendering();
+        self.set_force_render();
+        Ok(())
+    }
+    /// Whether a pane can be docked on this side of a tiled pane of this tab
+    pub fn can_dock_pane_beside(&mut self, target_pane_id: PaneId, side: DockSide) -> bool {
+        !self.floating_panes.panes_are_visible()
+            && self.tiled_panes.panes_contain(&target_pane_id)
+            && self.tiled_panes.can_dock_pane_beside(target_pane_id, side)
+    }
+    /// Whether docking a pane on the left or right of another one would keep the current swap
+    /// layout of this tab (see insert_docked_pane)
+    pub fn keeps_swap_layout_when_docking(&self) -> bool {
+        !self.swap_layouts.is_tiled_damaged() && self.tiled_panes_are_a_single_row()
+    }
+    /// A tab closes when its last tiled pane leaves, and its floating panes close with it
+    pub fn is_last_tiled_pane_of_tab_with_floating_panes(&self, pane_id: PaneId) -> bool {
+        let selectable_tiled_panes = self
+            .tiled_panes
+            .get_panes()
+            .filter(|(_, pane)| pane.selectable())
+            .count();
+        self.tiled_panes.panes_contain(&pane_id)
+            && selectable_tiled_panes <= 1
+            && self.floating_panes.has_panes()
+    }
+    /// Whether all the selectable tiled panes of this tab are side by side in a single row
+    fn tiled_panes_are_a_single_row(&self) -> bool {
+        let mut rows = self
+            .tiled_panes
+            .get_panes()
+            .filter(|(_, pane)| pane.selectable())
+            .map(|(_, pane)| {
+                let geom = pane.position_and_size();
+                (geom.y, geom.rows.as_usize())
+            });
+        match rows.next() {
+            Some(first_row) => rows.all(|row| row == first_row),
+            None => true,
+        }
+    }
+    /// Gives the selectable tiled panes logical positions in their order from left to right, so
+    /// that re-applying a layout keeps them in this order. The positions are past those of any
+    /// layout slot: no pane then matches a slot by its position, and the layout fills its slots
+    /// in their order with the panes sorted by position.
+    fn order_tiled_panes_by_column(&mut self) {
+        const FIRST_REORDERED_LOGICAL_POSITION: usize = 10_000;
+        let mut panes: Vec<(usize, PaneId)> = self
+            .tiled_panes
+            .get_panes()
+            .filter(|(_, pane)| pane.selectable())
+            .map(|(pane_id, pane)| (pane.x(), *pane_id))
+            .collect();
+        panes.sort();
+        for (index, (_, pane_id)) in panes.into_iter().enumerate() {
+            self.tiled_panes
+                .set_pane_logical_position(pane_id, FIRST_REORDERED_LOGICAL_POSITION + index);
+        }
+    }
+    /// The panes a tab brings along when it is dragged with the mouse into another tab: its
+    /// selectable tiled and floating panes and the hidden members of its stack lists (but not
+    /// eg. its tab bar)
+    pub fn pane_ids_to_merge(&self) -> (Vec<PaneId>, Vec<PaneId>) {
+        let mut tiled_pane_ids: Vec<(usize, usize, PaneId)> = self
+            .tiled_panes
+            .get_panes()
+            .filter(|(_, pane)| pane.selectable())
+            .map(|(pane_id, pane)| (pane.y(), pane.x(), *pane_id))
+            .collect();
+        tiled_pane_ids.sort();
+        let mut tiled_pane_ids: Vec<PaneId> =
+            tiled_pane_ids.into_iter().map(|(_, _, id)| id).collect();
+        tiled_pane_ids.extend(
+            self.suppressed_stack_list_members()
+                .map(|(pane_id, _)| *pane_id),
+        );
+        let floating_pane_ids = self
+            .floating_panes
+            .get_panes()
+            .filter(|(_, pane)| pane.selectable())
+            .map(|(pane_id, _)| *pane_id)
+            .collect();
+        (tiled_pane_ids, floating_pane_ids)
+    }
+    pub fn drop_target_at(&mut self, position: &Position) -> Option<DropTarget> {
+        MouseHandler::drop_target_at(self, position)
+    }
+    pub fn send_drag_hover_to_plugin(
+        &self,
+        plugin_pane_id: PaneId,
+        relative_position: Position,
+        client_id: ClientId,
+    ) {
+        MouseHandler::send_drag_hover_to_plugin(self, plugin_pane_id, relative_position, client_id);
+    }
+    pub fn clear_drag_hover_on_plugin(&self, plugin_pane_id: PaneId, client_id: ClientId) {
+        MouseHandler::clear_drag_hover_on_plugin(self, plugin_pane_id, client_id);
+    }
+    pub fn focus_pane_at_mouse_position(
+        &mut self,
+        position: &Position,
+        client_id: ClientId,
+    ) -> Result<()> {
+        MouseHandler::focus_pane_at(self, position, client_id)
+    }
+    pub fn set_drag_feedback(&mut self, client_id: ClientId, drag_feedback: DragFeedback) {
+        if self.drag_feedback.get(&client_id) != Some(&drag_feedback) {
+            self.drag_feedback.insert(client_id, drag_feedback);
+            // erases the previous drop zone and draws the new one
+            self.set_force_render();
+        }
+    }
+    pub fn clear_drag_feedback(&mut self, client_id: ClientId) {
+        if self.drag_feedback.remove(&client_id).is_some() {
+            self.set_force_render();
+        }
+    }
+    fn render_drag_feedback(&self, output: &mut Output) -> Result<()> {
+        for (client_id, drag_feedback) in &self.drag_feedback {
+            let Some((pane_id, zone)) = drag_feedback.drop_target else {
+                continue;
+            };
+            let Some(pane) = self.get_pane_with_id(pane_id) else {
+                continue;
+            };
+            let chunks = drop_zone_overlay_chunks(
+                pane.get_content_x(),
+                pane.get_content_y(),
+                pane.get_content_columns(),
+                pane.get_content_rows(),
+                zone,
+                &self.style,
+            );
+            output.add_character_chunks_to_client(*client_id, chunks, None)?;
+        }
+        Ok(())
     }
     pub fn update_selection_options(
         &mut self,

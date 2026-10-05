@@ -227,6 +227,20 @@ pub enum PluginInstruction {
         line: isize,
         column: usize,
     },
+    PaneDragHover {
+        plugin_id: u32,
+        client_id: ClientId,
+        pane_id: PaneId,
+        line: isize,
+        column: usize,
+    },
+    TabDropped {
+        plugin_id: u32,
+        client_id: ClientId,
+        tab_id: usize,
+        line: isize,
+        column: usize,
+    },
     Exit,
 }
 
@@ -292,6 +306,8 @@ impl From<&PluginInstruction> for PluginContext {
             },
             PluginInstruction::HighlightClicked { .. } => PluginContext::HighlightClicked,
             PluginInstruction::PaneDropped { .. } => PluginContext::PaneDropped,
+            PluginInstruction::PaneDragHover { .. } => PluginContext::PaneDragHover,
+            PluginInstruction::TabDropped { .. } => PluginContext::TabDropped,
         }
     }
 }
@@ -1289,6 +1305,36 @@ pub(crate) fn plugin_thread_main(
             } => {
                 let event = Event::PaneDropped {
                     pane_id: pane_id.into(),
+                    line,
+                    column,
+                };
+                let updates = vec![(Some(plugin_id), Some(client_id), event)];
+                wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
+            },
+            PluginInstruction::PaneDragHover {
+                plugin_id,
+                client_id,
+                pane_id,
+                line,
+                column,
+            } => {
+                let event = Event::PaneDragHover {
+                    pane_id: pane_id.into(),
+                    line,
+                    column,
+                };
+                let updates = vec![(Some(plugin_id), Some(client_id), event)];
+                wasm_bridge.update_plugins(updates, shutdown_send.clone())?;
+            },
+            PluginInstruction::TabDropped {
+                plugin_id,
+                client_id,
+                tab_id,
+                line,
+                column,
+            } => {
+                let event = Event::TabDropped {
+                    tab_id,
                     line,
                     column,
                 };
