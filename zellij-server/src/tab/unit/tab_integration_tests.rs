@@ -14285,6 +14285,49 @@ fn docking_a_pane_below_another_one_makes_the_layout_manual() {
 }
 
 #[test]
+fn double_click_on_a_title_maximizes_the_pane_and_the_next_one_brings_back_equal_columns() {
+    let client_id = 1;
+    let mut tab = create_tab_with_three_columns();
+    // a manual layout, with columns of different widths
+    tab.dock_pane(
+        PaneId::Terminal(1),
+        PaneId::Terminal(3),
+        DockSide::Bottom,
+        client_id,
+    )
+    .unwrap();
+    let double_click_on_title = |tab: &mut Tab| {
+        let title_position = title_row_position(tab, PaneId::Terminal(2));
+        for _ in 0..2 {
+            tab.handle_mouse_event(&MouseEvent::new_left_press_event(title_position), client_id)
+                .unwrap();
+        }
+    };
+
+    double_click_on_title(&mut tab);
+    assert!(tab.is_fullscreen_active(), "The pane is maximized");
+    assert_eq!(tab.fullscreen_pane_id(), Some(PaneId::Terminal(2)));
+
+    double_click_on_title(&mut tab);
+    assert!(!tab.is_fullscreen_active(), "All the panes are back");
+    let all_panes = [
+        PaneId::Terminal(1),
+        PaneId::Terminal(2),
+        PaneId::Terminal(3),
+    ];
+    let widths: Vec<usize> = all_panes
+        .iter()
+        .map(|pane_id| tab.get_pane_with_id(*pane_id).unwrap().cols())
+        .collect();
+    let (narrowest, widest) = (*widths.iter().min().unwrap(), *widths.iter().max().unwrap());
+    assert!(
+        widest - narrowest <= 1,
+        "The columns are of equal width again: {:?}",
+        widths
+    );
+}
+
+#[test]
 fn hovering_a_pane_title_shows_the_drag_hint() {
     let client_id = 1;
     let (mut tab, _mock_plugin_receiver) = create_tab_with_terminal_and_plugin_pane(false);

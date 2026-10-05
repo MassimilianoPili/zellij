@@ -217,6 +217,9 @@ enum MouseAction {
         pane_id: PaneId,
         position: Position,
     },
+    TogglePaneMaximized {
+        pane_id: PaneId,
+    },
     ScrollUp {
         pane_id: PaneId,
         lines: usize,
@@ -311,8 +314,12 @@ struct MouseEventContext {
     mouse_click_through: bool,
     mouse_scroll_resize: bool,
     mouse_drag_panes: bool,
+    // this press is the second of a double click on the title row of the same pane
+    title_row_double_click: bool,
     passthrough_pane_id: Option<PaneId>,
 }
+
+const DOUBLE_CLICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 fn edge_and_delta_to_strategies(
     edge: PaneEdge,
@@ -555,6 +562,9 @@ impl MouseHandler {
             )
         });
 
+        let title_row_double_click =
+            Self::track_title_row_press(tab, event, clicked_pane.as_ref(), client_id);
+
         let (pinned_selectable, pinned_unselectable) = if !floating_visible {
             let selectable = tab
                 .floating_panes
@@ -586,8 +596,45 @@ impl MouseHandler {
             mouse_click_through: tab.mouse_click_through,
             mouse_scroll_resize: tab.mouse_scroll_resize,
             mouse_drag_panes: tab.mouse_drag_panes,
+            title_row_double_click,
             passthrough_pane_id,
         })
+    }
+
+    /// Whether this press on the title row of a pane is the second of a double click on it
+    fn track_title_row_press(
+        tab: &mut Tab,
+        event: &MouseEvent,
+        clicked_pane: Option<&ClickedPaneDetails>,
+        client_id: ClientId,
+    ) -> bool {
+        let is_plain_left_press =
+            event.left && event.event_type == MouseEventType::Press && !event.ctrl && !event.alt;
+        if !is_plain_left_press {
+            return false;
+        }
+        let Some(pane_id) = clicked_pane
+            .filter(|details| details.on_title_row)
+            .map(|details| details.pane_id)
+        else {
+            tab.last_title_row_press.remove(&client_id);
+            return false;
+        };
+        let now = Instant::now();
+        let is_double_click = tab
+            .last_title_row_press
+            .get(&client_id)
+            .map(|(time, previous_pane_id)| {
+                *previous_pane_id == pane_id && now.duration_since(*time) <= DOUBLE_CLICK_INTERVAL
+            })
+            .unwrap_or(false);
+        if is_double_click {
+            // a third click starts a new double click
+            tab.last_title_row_press.remove(&client_id);
+        } else {
+            tab.last_title_row_press.insert(client_id, (now, pane_id));
+        }
+        is_double_click
     }
 
     fn gather_clicked_pane_details(
@@ -1018,6 +1065,11 @@ impl MouseHandler {
             } => {
                 clear_hover_for_client(tab, client_id);
                 Ok(MouseEffect::start_pane_drag(pane_id))
+            },
+            MouseAction::TogglePaneMaximized { pane_id } => {
+                tab.toggle_pane_maximized(pane_id, client_id)
+                    .with_context(err_context)?;
+                Ok(MouseEffect::state_changed())
             },
             MouseAction::ScrollUp { pane_id: _, lines } => {
                 Self::handle_scrollwheel_up(tab, &event.position, lines, client_id)
@@ -1671,7 +1723,17 @@ impl MouseHandler {
                     });
                 }
 
-                // with mouse_drag_panes, the title row drags the pane and Ctrl+drag resizes it
+                // with mouse_drag_panes, a double click on the title row maximizes the pane (or
+                // brings back all the panes), a drag moves it and Ctrl+drag resizes it
+                if ctx.mouse_drag_panes
+                    && details.on_title_row
+                    && !details.is_floating
+                    && ctx.title_row_double_click
+                {
+                    return Ok(MouseAction::TogglePaneMaximized {
+                        pane_id: details.pane_id,
+                    });
+                }
                 if ctx.mouse_drag_panes && details.on_title_row && !details.is_floating {
                     return Ok(MouseAction::StartDragPane {
                         pane_id: details.pane_id,
@@ -2135,6 +2197,7 @@ mod tests {
             mouse_click_through: false,
             mouse_scroll_resize,
             mouse_drag_panes: false,
+            title_row_double_click: false,
             passthrough_pane_id: None,
         }
     }
@@ -2189,6 +2252,20 @@ mod tests {
                 edge: PaneEdge::TopLeft,
                 is_floating: false,
                 position,
+            }
+        );
+    }
+
+    #[test]
+    fn double_click_on_title_row_toggles_maximizing_the_pane() {
+        let position = Position::new(0, 5);
+        let event = MouseEvent::new_left_press_event(position);
+        let mut context = title_row_context(true);
+        context.title_row_double_click = true;
+        assert_eq!(
+            MouseHandler::determine_mouse_action(&event, &context).unwrap(),
+            MouseAction::TogglePaneMaximized {
+                pane_id: PaneId::Terminal(1),
             }
         );
     }

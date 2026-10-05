@@ -234,6 +234,7 @@ pub(crate) struct Tab {
     pub selecting_with_mouse_in_pane: Option<PaneId>, // this is only pub for the tests
     pane_being_resized_with_mouse: Option<PaneResizeState>,
     mouse_hover_title_row: HashMap<ClientId, PaneId>,
+    last_title_row_press: HashMap<ClientId, (Instant, PaneId)>,
     drag_feedback: HashMap<ClientId, DragFeedback>,
     link_handler: Rc<RefCell<LinkHandler>>,
     clipboard_provider: ClipboardProvider,
@@ -1004,6 +1005,7 @@ impl Tab {
             selecting_with_mouse_in_pane: None,
             pane_being_resized_with_mouse: None,
             mouse_hover_title_row: HashMap::new(),
+            last_title_row_press: HashMap::new(),
             drag_feedback: HashMap::new(),
             link_handler: Rc::new(RefCell::new(LinkHandler::new())),
             clipboard_provider,
@@ -2320,6 +2322,7 @@ impl Tab {
         self.mouse_last_pane_id.remove(&client_id);
         self.last_mouse_activity_time.remove(&client_id);
         self.mouse_hover_title_row.remove(&client_id);
+        self.last_title_row_press.remove(&client_id);
         self.drag_feedback.remove(&client_id);
         self.set_client_dimmed(client_id, false);
         self.set_force_render();
@@ -7657,6 +7660,31 @@ impl Tab {
     }
     pub fn update_mouse_drag_panes(&mut self, mouse_drag_panes: bool) {
         self.mouse_drag_panes = mouse_drag_panes;
+    }
+    /// A double click on the title of a pane: the first one maximizes the pane, the next one
+    /// brings back all the panes, with the sizes of the current swap layout (eg. equal columns)
+    pub fn toggle_pane_maximized(&mut self, pane_id: PaneId, client_id: ClientId) -> Result<()> {
+        if self.tiled_panes.fullscreen_is_active() {
+            self.unset_fullscreen();
+            self.equalize_tiled_panes()?;
+        } else if self.tiled_panes.panes_contain(&pane_id) {
+            self.tiled_panes.focus_pane(pane_id, client_id);
+            self.toggle_pane_fullscreen(pane_id);
+        }
+        self.set_should_clear_display_before_rendering();
+        self.set_force_render();
+        Ok(())
+    }
+    /// Gives the tiled panes the sizes of the current swap layout again (eg. equal columns),
+    /// keeping a single row of panes in its order from left to right
+    pub fn equalize_tiled_panes(&mut self) -> Result<()> {
+        if self.tiled_panes_are_a_single_row() {
+            self.order_tiled_panes_by_column();
+        }
+        // the layout is marked as damaged, so this re-applies the current swap layout instead of
+        // moving to the next one
+        self.swap_layouts.set_is_tiled_damaged();
+        self.relayout_tiled_panes(false)
     }
     /// Swaps two tiled panes of this tab, eg. when one is dragged with the mouse onto the other.
     /// This keeps the current swap layout.

@@ -209,7 +209,9 @@ pub fn title_drag_segments(tier: HintTier) -> Vec<HintSegment> {
             HintSegment::emphasis_2("Ctrl"),
             HintSegment::plain(" <"),
             HintSegment::emphasis_2("drag"),
-            HintSegment::plain("> to resize "),
+            HintSegment::plain("> to resize, <"),
+            HintSegment::emphasis_2("double-click"),
+            HintSegment::plain("> to maximize "),
         ],
         HintTier::Medium => vec![
             HintSegment::plain(" <"),
@@ -218,7 +220,9 @@ pub fn title_drag_segments(tier: HintTier) -> Vec<HintSegment> {
             HintSegment::emphasis_2("Ctrl"),
             HintSegment::plain(" <"),
             HintSegment::emphasis_2("drag"),
-            HintSegment::plain("> resize "),
+            HintSegment::plain("> resize, <"),
+            HintSegment::emphasis_2("double-click"),
+            HintSegment::plain("> maximize "),
         ],
         HintTier::Minimal => vec![
             HintSegment::plain(" <"),
