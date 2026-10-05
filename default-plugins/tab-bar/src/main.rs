@@ -195,7 +195,9 @@ impl ZellijPlugin for State {
                 },
                 _ => {},
             },
-            Event::PaneDropped { pane_id, column, .. } => {
+            Event::PaneDropped {
+                pane_id, column, ..
+            } => {
                 if let Some((start, end)) = self.new_tab_button_range {
                     if column >= start && column < end {
                         break_panes_to_new_tab(&[pane_id], None, true);

@@ -11363,10 +11363,7 @@ fn move_tab_to_position_reorders_the_tabs() {
     screen.move_tab_to_position(0, 2).unwrap();
 
     let position_of = |tab_id| screen.tabs.get(&tab_id).unwrap().position;
-    assert_eq!(
-        (position_of(0), position_of(1), position_of(2)),
-        (2, 0, 1)
-    );
+    assert_eq!((position_of(0), position_of(1), position_of(2)), (2, 0, 1));
 }
 
 #[test]

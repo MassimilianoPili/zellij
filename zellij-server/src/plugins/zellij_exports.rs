@@ -4949,7 +4949,13 @@ fn start_tab_drag(env: &PluginEnv, tab_id: u64) {
             tab_id as usize,
             env.client_id,
         ))
-        .with_context(|| format!("failed to start dragging tab {} from plugin {}", tab_id, env.name()))
+        .with_context(|| {
+            format!(
+                "failed to start dragging tab {} from plugin {}",
+                tab_id,
+                env.name()
+            )
+        })
         .non_fatal();
 }
 

@@ -110,7 +110,9 @@ impl ZellijPlugin for State {
                 self.handle_mouse_event(mouse_event);
                 false
             },
-            Event::PaneDropped { pane_id, column, .. } => {
+            Event::PaneDropped {
+                pane_id, column, ..
+            } => {
                 self.handle_pane_dropped(pane_id, column);
                 false
             },

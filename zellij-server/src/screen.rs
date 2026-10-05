@@ -935,7 +935,7 @@ pub enum ScreenInstruction {
     ClearMouseHelpText(ClientId),
     // a pane dragged with the mouse stayed still over the tab bar
     DragHoverElapsed(ClientId),
-    StartTabDrag(usize, ClientId),    // usize - tab id
+    StartTabDrag(usize, ClientId),   // usize - tab id
     MoveTabToPosition(usize, usize), // tab id, position
     UpdateAvailableLayouts(Vec<LayoutInfo>, Vec<LayoutWithError>),
     SetPluginRegexHighlights {
@@ -7456,7 +7456,9 @@ impl Screen {
             DraggedItem::Pane(pane_id) => Some(pane_id),
             DraggedItem::Tab(_) => None,
         };
-        let active_tab = self.get_active_tab_mut(client_id).with_context(err_context)?;
+        let active_tab = self
+            .get_active_tab_mut(client_id)
+            .with_context(err_context)?;
         let drop_target = active_tab.drop_target_at(&position);
         let hovered_plugin = match drop_target {
             Some(DropTarget::Plugin {
@@ -7481,7 +7483,9 @@ impl Screen {
         if let Some((_, plugin_pane_id, relative_position)) = hovered_plugin {
             active_tab.send_drag_hover_to_plugin(plugin_pane_id, relative_position, client_id);
         }
-        let hovered_plugin_changed = drag.hovered_plugin.map(|(tab_id, pane_id, _)| (tab_id, pane_id))
+        let hovered_plugin_changed = drag
+            .hovered_plugin
+            .map(|(tab_id, pane_id, _)| (tab_id, pane_id))
             != hovered_plugin.map(|(tab_id, pane_id, _)| (tab_id, pane_id));
         if hovered_plugin_changed {
             // tells the plugin the mouse left it
@@ -7493,7 +7497,9 @@ impl Screen {
         }
         // a pane held still over a tab in the tab bar switches to that tab, so that it can then be
         // dropped beside a pane there
-        if dragged_pane_id.is_some() && hovered_plugin.is_some() && hovered_plugin != drag.hovered_plugin
+        if dragged_pane_id.is_some()
+            && hovered_plugin.is_some()
+            && hovered_plugin != drag.hovered_plugin
         {
             self.bus
                 .senders
@@ -7514,7 +7520,9 @@ impl Screen {
         match (drag.dragged, drag.has_moved) {
             (DraggedItem::Pane(pane_id), false) => {
                 // pressing and releasing the title of a pane without moving is a click on it
-                let active_tab = self.get_active_tab_mut(client_id).with_context(err_context)?;
+                let active_tab = self
+                    .get_active_tab_mut(client_id)
+                    .with_context(err_context)?;
                 if active_tab.get_active_pane_id(client_id) != Some(pane_id) {
                     active_tab
                         .focus_pane_at_mouse_position(&position, client_id)
@@ -7624,12 +7632,19 @@ impl Screen {
                 zone,
             }) if target_pane_id != pane_id => match (pane_is_in_active_tab, zone.dock_side()) {
                 (true, None) => {
-                    self.get_active_tab_mut(client_id)?
-                        .swap_tiled_panes(pane_id, target_pane_id, client_id);
+                    self.get_active_tab_mut(client_id)?.swap_tiled_panes(
+                        pane_id,
+                        target_pane_id,
+                        client_id,
+                    );
                 },
                 (true, Some(side)) => {
-                    self.get_active_tab_mut(client_id)?
-                        .dock_pane(pane_id, target_pane_id, side, client_id)?;
+                    self.get_active_tab_mut(client_id)?.dock_pane(
+                        pane_id,
+                        target_pane_id,
+                        side,
+                        client_id,
+                    )?;
                 },
                 // a pane from another tab dropped in the middle of a pane joins this tab where
                 // its layout puts it
@@ -7702,7 +7717,13 @@ impl Screen {
             return Ok(());
         };
         if let Some(target_tab) = self.tabs.get_mut(&target_tab_id) {
-            target_tab.insert_docked_pane(pane, target_pane_id, side, keep_swap_layout, client_id)?;
+            target_tab.insert_docked_pane(
+                pane,
+                target_pane_id,
+                side,
+                keep_swap_layout,
+                client_id,
+            )?;
         }
         Ok(())
     }
@@ -7780,7 +7801,13 @@ impl Screen {
             )?;
         }
         if let Some((pane_id, side)) = pane_id_to_dock {
-            self.dock_pane_from_another_tab(pane_id, target_pane_id, side, target_tab_id, client_id)?;
+            self.dock_pane_from_another_tab(
+                pane_id,
+                target_pane_id,
+                side,
+                target_tab_id,
+                client_id,
+            )?;
             // without room beside the target, the pane joins the tab where its layout puts it
             if self
                 .tabs
