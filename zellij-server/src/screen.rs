@@ -6629,26 +6629,22 @@ impl Screen {
         self.render(None)?;
         Ok(())
     }
-    pub fn break_multiple_panes_to_tab_with_index(
+    pub fn break_multiple_panes_to_tab_with_id(
         &mut self,
         pane_ids: Vec<PaneId>,
-        tab_index: usize,
+        tab_id: usize,
         should_change_focus_to_new_tab: bool,
         client_id: ClientId,
     ) -> Result<()> {
-        let all_tabs = self.get_tabs_mut();
-        let has_tab_with_index = all_tabs
-            .values()
-            .find(|t| t.position == tab_index)
-            .is_some();
-        if !has_tab_with_index {
-            log::error!("Cannot find tab with index: {tab_index}");
+        let Some(tab_position) = self.get_tab_position_by_id(tab_id) else {
+            log::error!("Cannot find tab with id: {tab_id}");
             return Ok(());
-        }
+        };
+        let all_tabs = self.get_tabs_mut();
         let mut extracted_panes = vec![];
         for pane_id in pane_ids {
             for tab in all_tabs.values_mut() {
-                if tab.position == tab_index {
+                if tab.id == tab_id {
                     continue;
                 }
                 // here we pass None instead of the client_id we have because we do not need to
@@ -6662,13 +6658,13 @@ impl Screen {
         }
 
         if should_change_focus_to_new_tab {
-            self.go_to_tab(tab_index + 1, client_id)?;
+            self.go_to_tab(tab_position + 1, client_id)?;
         }
         if extracted_panes.is_empty() {
             // nothing to do here...
             return Ok(());
         }
-        if let Some(new_active_tab) = self.get_indexed_tab_mut(tab_index) {
+        if let Some(new_active_tab) = self.get_tab_by_id_mut(tab_id) {
             let tab_size = new_active_tab.size;
             for (pane_was_floating, mut pane) in extracted_panes {
                 let pane_id = pane.pid();
@@ -6699,7 +6695,7 @@ impl Screen {
                 }
             }
         } else {
-            log::error!("Could not find tab with index: {:?}", tab_index);
+            log::error!("Could not find tab with id: {:?}", tab_id);
         }
         self.log_and_report_session_state()?;
         Ok(())
@@ -11309,8 +11305,7 @@ pub(crate) fn screen_thread_main(
                     log::error!("Tab with ID {} not found", tab_id);
                     // Don't set affected_tab_id, it will remain None to signal failure
                 } else {
-                    // break_multiple_panes_to_tab_with_index uses tab ID
-                    screen.break_multiple_panes_to_tab_with_index(
+                    screen.break_multiple_panes_to_tab_with_id(
                         pane_ids,
                         tab_id,
                         should_change_focus_to_target_tab,
@@ -11961,17 +11956,20 @@ pub(crate) fn screen_thread_main(
                 client_id,
                 mut completion_tx,
             } => {
-                // tab_index is the target tab ID
-                screen.break_multiple_panes_to_tab_with_index(
-                    pane_ids,
-                    tab_index,
-                    should_change_focus_to_new_tab,
-                    client_id,
-                )?;
-                // Set affected tab ID (tab_index is the ID here)
-                completion_tx
-                    .as_mut()
-                    .map(|c| c.set_affected_tab_id(tab_index));
+                // tab_index is the target tab position (as shown in the tab bar)
+                if let Some(tab_id) = screen.get_tab_id_at_position(tab_index) {
+                    screen.break_multiple_panes_to_tab_with_id(
+                        pane_ids,
+                        tab_id,
+                        should_change_focus_to_new_tab,
+                        client_id,
+                    )?;
+                    completion_tx
+                        .as_mut()
+                        .map(|c| c.set_affected_tab_id(tab_id));
+                } else {
+                    log::error!("Cannot find tab at position: {tab_index}");
+                }
                 let pane_group = screen.get_client_pane_group(&client_id);
                 if !pane_group.is_empty() {
                     let _ = screen.bus.senders.send_to_background_jobs(

@@ -11057,7 +11057,7 @@ fn moving_panes_between_tabs_with_focus_change_recomputes_both() {
     }
 
     screen
-        .break_multiple_panes_to_tab_with_index(vec![pane_to_move], 0, true, 1)
+        .break_multiple_panes_to_tab_with_id(vec![pane_to_move], 0, true, 1)
         .expect("TEST");
 
     assert_eq!(
@@ -11069,6 +11069,57 @@ fn moving_panes_between_tabs_with_focus_change_recomputes_both() {
         screen.tabs.get(&1).unwrap().size,
         Size { cols: 80, rows: 24 },
         "Source tab is empty — last viewer-derived size is preserved"
+    );
+}
+
+#[test]
+fn break_multiple_panes_to_tab_with_id_after_closing_a_tab() {
+    let size = Size {
+        cols: 121,
+        rows: 20,
+    };
+    let mut screen = create_new_screen(size, true, true);
+    new_tab(&mut screen, 1, 0);
+    new_tab(&mut screen, 2, 1);
+    new_tab(&mut screen, 3, 2);
+    // the tab with id 2 is now at position 1, so ids and positions no longer match
+    screen.close_tab_by_id(1).expect("TEST");
+
+    let pane_to_move = PaneId::Terminal(42);
+    screen
+        .get_tab_by_id_mut(0)
+        .unwrap()
+        .new_pane(
+            pane_to_move,
+            None,
+            None,
+            false,
+            true,
+            NewPanePlacement::default(),
+            Some(1),
+            None,
+        )
+        .unwrap();
+
+    screen
+        .break_multiple_panes_to_tab_with_id(vec![pane_to_move], 2, false, 1)
+        .expect("TEST");
+
+    assert!(
+        screen
+            .tabs
+            .get(&2)
+            .unwrap()
+            .has_pane_with_pid(&pane_to_move),
+        "Pane moved to the tab with id 2"
+    );
+    assert!(
+        !screen
+            .tabs
+            .get(&0)
+            .unwrap()
+            .has_pane_with_pid(&pane_to_move),
+        "Pane left its source tab"
     );
 }
 
